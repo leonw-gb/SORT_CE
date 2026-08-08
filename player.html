@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SORT – Session Timeline</title>
+  <style>
+    :root {
+      --bg: #0e1116; --panel: #161b22; --panel2: #1b212b; --line: #232a36;
+      --line2: #2d3543; --txt: #e8eaed; --muted: #9aa4b2; --dim: #6b7686;
+      --accent: #E21A82;
+      --c-click: #4aa3ff; --c-input: #35c48b; --c-key: #c792ea;
+      --c-nav: #f2b155; --c-tab: #7dd3fc; --c-net: #8a94a6;
+      --c-sop: #E21A82; --c-note: #ffd166;
+    }
+    * { box-sizing: border-box; }
+    /* One dial for the whole UI. Every size below is written at 100% and
+       rendered at 90% -- so the type scale, spacing and controls stay in the
+       proportions they were designed in. player.js reads the same number when
+       it converts pointer coordinates for the splitter. */
+    body { zoom: 0.9; }
+    body {
+      margin: 0; height: calc(100vh / 0.9); display: flex; flex-direction: column;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg); color: var(--txt);
+    }
+    /* Title, session facts and controls share ONE bar: the facts are read
+       once at a glance, so they do not deserve a band of their own. */
+    .brand { font-size: 13px; font-weight: 600; margin: 0; letter-spacing: .3px; white-space: nowrap; }
+    .brand .accent { color: var(--accent); }
+    .stats { display: flex; gap: 14px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+    .stats b { color: var(--txt); font-variant-numeric: tabular-nums; }
+    .rule { width: 1px; align-self: stretch; background: var(--line2); }
+    /* Counts live on the filter chips now, so a chip reads "Clicks 21". The
+       count is dimmed so the label stays the thing you scan for. */
+    .chip .n { opacity: .65; font-variant-numeric: tabular-nums; margin-left: 4px; }
+    .toolbar {
+      padding: 10px 20px; border-bottom: 1px solid var(--line);
+      background: var(--panel); display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    }
+    .toolbar input[type=search], .toolbar select {
+      background: var(--bg); color: var(--txt); border: 1px solid var(--line2);
+      border-radius: 6px; padding: 7px 10px; font-size: 12px;
+    }
+    .toolbar input[type=search] { width: 240px; }
+    .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+    .chip {
+      font-size: 11px; padding: 4px 9px; border-radius: 999px; cursor: pointer;
+      border: 1px solid var(--line2); background: var(--panel2); color: var(--muted);
+      user-select: none; transition: all .12s;
+    }
+    .chip.on { color: #fff; border-color: transparent; }
+    .chip[data-k="click"].on { background: var(--c-click); }
+    .chip[data-k="input"].on { background: var(--c-input); }
+    .chip[data-k="key"].on { background: var(--c-key); color: #1a1030; }
+    .chip[data-k="nav"].on { background: var(--c-nav); color: #2a1c00; }
+    .chip[data-k="tab"].on { background: var(--c-tab); color: #06283a; }
+    .chip[data-k="net"].on { background: var(--c-net); color: #10151c; }
+    .chip[data-k="ws"].on { background: var(--c-net); color: #10151c; }
+    .chip[data-k="misc"].on { background: #5b6472; color: #fff; }
+    .spacer { flex: 1; }
+    .btn {
+      font-size: 11px; padding: 6px 11px; border-radius: 6px; cursor: pointer;
+      border: 1px solid var(--line2); background: var(--panel2); color: var(--muted);
+    }
+    .btn:hover { color: var(--txt); border-color: var(--dim); }
+    .btn.active { color: #fff; background: var(--accent); border-color: var(--accent); }
+    #log { flex: 1; overflow-y: auto; padding: 8px 0 40px; min-height: 0; }
+    .step-group { margin: 0 0 6px; }
+    .step-head {
+      position: sticky; top: 0; z-index: 2;
+      background: linear-gradient(180deg, var(--bg) 72%, transparent);
+      padding: 12px 20px 8px; display: flex; align-items: center; gap: 10px; cursor: pointer;
+    }
+    .step-head .caret { color: var(--dim); font-size: 11px; width: 10px; transition: transform .12s; }
+    .step-group.collapsed .caret { transform: rotate(-90deg); }
+    .step-head .badge {
+      background: var(--accent); color: #fff; font-size: 10px; font-weight: 700;
+      padding: 2px 8px; border-radius: 4px; letter-spacing: .3px;
+    }
+    .step-head .title { font-size: 12px; font-weight: 600; color: var(--txt); }
+    .step-head .count { font-size: 11px; color: var(--dim); margin-left: auto; }
+    .step-body { padding: 0 20px; }
+    .step-group.collapsed .step-body { display: none; }
+    .row {
+      display: grid; grid-template-columns: 62px 22px 1fr auto;
+      align-items: baseline; gap: 10px;
+      padding: 5px 10px; border-radius: 6px;
+      border-left: 3px solid transparent; position: relative;
+    }
+    .row:hover { background: var(--panel2); }
+    .row .t { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
+    .row .ico {
+      font-size: 11px; line-height: 1; text-align: center;
+      width: 20px; height: 20px; border-radius: 5px; color: #fff; font-weight: 700;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .ico.click { background: var(--c-click); }
+    .ico.input { background: var(--c-input); }
+    .ico.key { background: var(--c-key); color: #1a1030; }
+    .ico.nav { background: var(--c-nav); color: #2a1c00; }
+    .ico.tab { background: var(--c-tab); color: #06283a; }
+    .ico.net, .ico.ws { background: var(--c-net); color: #10151c; }
+    .ico.sop { background: var(--c-sop); }
+    .ico.note { background: var(--c-note); color: #3a2c00; }
+    .ico.misc { background: #5b6472; }
+    .row .body { font-size: 12.5px; min-width: 0; }
+    .row .body .lead { color: var(--txt); }
+    .row .body .lead b { font-weight: 600; }
+    .row .body .sub { color: var(--muted); font-size: 11px; display: block; margin-top: 1px; word-break: break-all; }
+    .row .body .dbg {
+      display: block; margin-top: 2px; font-size: 10px; font-family: ui-monospace, monospace;
+      color: #b58900; background: rgba(181,137,0,.08); border-left: 2px solid #b58900;
+      padding: 2px 6px; border-radius: 0 4px 4px 0;
+    }
+    .row .meta { font-size: 10px; color: var(--dim); white-space: nowrap; }
+    .tab-pill {
+      font-size: 9px; padding: 1px 6px; border-radius: 999px;
+      background: var(--line); color: var(--muted); margin-left: 6px;
+    }
+    .gap {
+      display: flex; align-items: center; gap: 10px; margin: 4px 20px; color: var(--dim); font-size: 11px;
+    }
+    .gap::before, .gap::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+    .gap.long { color: var(--c-nav); }
+    .gap.long::before, .gap.long::after { background: #3a2f18; }
+    #empty { padding: 40px 20px; color: var(--muted); font-size: 13px; }
+    /* Video pane: sticks to the top so the frame stays visible while the
+       operator scrolls the timeline below it. */
+    /* Video + timeline share the vertical space. The split is draggable, so
+       the operator decides whether they are reading the log or watching the
+       screen. #videoPane height is set inline by the drag handler. */
+    #split { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+    #videoPane {
+      display: none; flex: none; height: 42vh; min-height: 0;
+      background: #0f1115; border-bottom: 1px solid #262b33;
+      padding: 10px 16px; gap: 12px; align-items: flex-start; overflow: hidden;
+    }
+    #videoPane.on { display: flex; }
+    #sessionVideo {
+      height: 100%; width: auto; max-width: calc(100% - 220px);
+      border-radius: 8px; background: #000; outline: none;
+    }
+    #videoMeta { flex: 1; min-width: 0; }
+    /* Drag handle. 10px tall for an easy grab, with a visible 2px rule. */
+    #dragbar {
+      display: none; flex: none; height: 10px; cursor: row-resize;
+      background: var(--panel); border-bottom: 1px solid var(--line);
+      position: relative;
+    }
+    #dragbar.on { display: block; }
+    #dragbar::after {
+      content: ""; position: absolute; left: 50%; top: 4px;
+      width: 46px; height: 3px; margin-left: -23px; border-radius: 2px;
+      background: var(--line2);
+    }
+    #dragbar:hover::after, #dragbar.dragging::after { background: var(--dim); }
+    body.resizing { user-select: none; cursor: row-resize; }
+    #videoMeta { font-size: 12px; color: var(--muted); line-height: 1.6; }
+    #videoMeta b { color: #dfe4ec; }
+    /* Tab lanes. Collapsed, a lane is a single line naming the tab and how
+       long it was active -- the switch sequence at a glance. */
+    .tab-lane { border-bottom: 1px solid var(--line); }
+    .tab-lane-head {
+      display: flex; align-items: center; gap: 10px; cursor: pointer;
+      padding: 7px 20px; background: var(--panel2); font-size: 12px;
+      user-select: none;
+    }
+    .tab-lane-head:hover { background: #202734; }
+    .tab-lane-head:focus-visible { outline: 2px solid var(--c-tab); outline-offset: -2px; }
+    .tab-lane-head .caret { color: var(--dim); font-size: 9px; width: 9px; transition: transform .12s; }
+    .tab-lane.collapsed .caret { transform: rotate(-90deg); }
+    .tab-lane-head .swatch { width: 3px; height: 14px; border-radius: 2px; background: var(--c-tab); flex: none; }
+    .tab-lane-head .name { color: var(--txt); font-weight: 600; }
+    .tab-lane-head .when { color: var(--dim); font-variant-numeric: tabular-nums; }
+    .tab-lane-head .count { margin-left: auto; color: var(--dim); font-size: 11px; }
+    .tab-lane.collapsed .tab-lane-body { display: none; }
+
+    .row.playing { background: #16202c; box-shadow: inset 2px 0 0 var(--accent); }
+    .row { cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <h1 class="brand">Session <span class="accent">Timeline</span></h1>
+    <div class="stats" id="stats"></div>
+    <span class="rule"></span>
+    <input type="search" id="search" placeholder="Search actions, labels, URLs…" autocomplete="off">
+    <div class="chips" id="chips"></div>
+    <span class="spacer"></span>
+    <select id="tabFilter"><option value="">All tabs</option></select>
+    <button class="btn" id="foldTabs" title="Collapse every tab lane to a single line: which tab was active, and when it was switched to">Fold to tabs</button>
+    <button class="btn" id="copyLog">Copy log</button>
+    <button class="btn" id="debugToggle" title="Show technical node ids (flt-semantic-node-N) on every resolved click">Debug: off</button>
+  </div>
+
+  <div id="split">
+    <div id="videoPane">
+      <video id="sessionVideo" controls preload="metadata"></video>
+      <div id="videoMeta"></div>
+    </div>
+    <div id="dragbar" role="separator" aria-orientation="horizontal"
+         aria-label="Resize video and timeline" tabindex="0"></div>
+    <div id="log"></div>
+  </div>
+
+  <script src="player.js"></script>
+</body>
+</html>

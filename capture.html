@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Session capture</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; padding: 26px 28px;
+      font: 13px/1.6 -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: #14171c; color: #dfe4ec;
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    h1 { font-size: 16px; margin: 0 0 4px; letter-spacing: -0.01em; }
+    p { margin: 0 0 18px; color: #8b95a5; max-width: 60ch; }
+    button {
+      align-self: flex-start; padding: 11px 20px; border: 0; border-radius: 7px;
+      background: #3b82f6; color: #fff; font-size: 13px; font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: #2f74e8; }
+    button:disabled { background: #2a3038; color: #6b7482; cursor: default; }
+    button:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+    .state { display: flex; align-items: center; gap: 9px; margin-top: 18px; font-size: 12px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #4b5563; flex: none; }
+    .dot.live { background: #ef4444; animation: pulse 1.6s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: 0.35; } }
+    @media (prefers-reduced-motion: reduce) { .dot.live { animation: none; } }
+    .readout {
+      margin-top: 10px; display: flex; gap: 18px; flex-wrap: wrap;
+      font-size: 11.5px; color: #6b7482;
+    }
+    .readout b { color: #aab3c0; font-weight: 600; }
+    .hint { margin-top: auto; padding-top: 16px; border-top: 1px solid #262b33;
+            font-size: 11.5px; color: #6b7482; }
+    .err { color: #f87171; }
+  </style>
+</head>
+<body>
+  <h1>Capture the session</h1>
+  <p>Chrome needs your permission once per session. Pick <b>Entire screen</b> in the dialog, then press <b>Share</b>. Audio is never captured. This window minimizes itself once recording starts.</p>
+
+  <button id="btnShare">Share my screen</button>
+
+  <div class="state">
+    <span class="dot" id="dot"></span>
+    <span id="status">Waiting for you to choose a source.</span>
+  </div>
+
+  <div class="readout">
+    <span>Capturing <b id="spec">—</b></span>
+    <span>Recorded <b id="size">0.0 MB</b></span>
+  </div>
+
+  <div class="hint">This window minimizes once recording starts. Leave it
+    running: closing it ends the video, though the timeline keeps going.</div>
+
+  <script src="capture.js"></script>
+</body>
+</html>

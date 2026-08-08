@@ -1,0 +1,17 @@
+# Build output
+*.zip
+*.crx
+*.pem
+
+# OS cruft (this repo is shared between Windows and macOS)
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp

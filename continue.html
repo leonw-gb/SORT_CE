@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<title>SORT – Still recording</title>
+<style>
+  :root, [data-theme="dark"] { --bg:#0e1116; --panel2:#1b212b; --line2:#2d3543; --txt:#e8eaed; --muted:#9aa4b2; --accent:#E21A82; }
+  [data-theme="light"] { --bg:#f8f9fa; --panel2:#ffffff; --line2:#d6dae0; --txt:#20242b; --muted:#6b7280; --accent:#E21A82; }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:20px; background:var(--bg); color:var(--txt);
+    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size:13px;
+  }
+  h1 { font-size:15px; margin:0 0 6px; }
+  p { color:var(--muted); margin:0 0 16px; line-height:1.5; }
+  .row { display:flex; gap:10px; }
+  button {
+    flex:1; border-radius:6px; padding:10px 14px; font-size:13px; font-family:inherit; cursor:pointer;
+    background:var(--panel2); color:var(--txt); border:1px solid var(--line2);
+  }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:focus-visible { outline:2px solid #7dd3fc; outline-offset:2px; }
+</style>
+</head>
+<body>
+  <h1>The call ended. Still recording.</h1>
+  <p id="detail">Stop now to pick a ticket and save the video, or keep recording and we will ask again in 5 minutes.</p>
+  <div class="row">
+    <button id="stop" class="primary">Stop now</button>
+    <button id="cont">Keep recording</button>
+  </div>
+  <script src="theme.js"></script>
+  <script src="continue.js"></script>
+</body>
+</html>

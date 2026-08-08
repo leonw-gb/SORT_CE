@@ -1,0 +1,86 @@
+{
+  "manifest_version": 3,
+  "name": "SORT - Session Observer Recorder Tracker",
+  "version": "2.22.0",
+  "description": "Record expert problem-solving across multiple tabs on one correlated timeline: clicks, inputs, navigation, WebSocket actions, SOP step tagging, plus whole-screen video. Assigns each recording to an Odoo ticket and uploads it.",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "storage",
+    "webRequest",
+    "downloads",
+    "desktopCapture",
+    "alarms"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "ws-hook.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "tagger.css"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SORT",
+    "default_icon": {
+      "16": "icons/idle16.png",
+      "32": "icons/idle32.png",
+      "48": "icons/idle48.png",
+      "128": "icons/idle128.png"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "player.html",
+        "capture.html",
+        "ticket.html",
+        "continue.html"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
+  "icons": {
+    "16": "icons/idle16.png",
+    "32": "icons/idle32.png",
+    "48": "icons/idle48.png",
+    "128": "icons/idle128.png"
+  },
+  "commands": {
+    "toggle-recording": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+9",
+        "mac": "Command+Shift+9"
+      },
+      "description": "Start or stop a SORT recording",
+      "global": true
+    }
+  }
+}
