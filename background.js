@@ -245,7 +245,7 @@ async function startSession(options) {
   // session that is about to be turned down.
   const recorder = (config.sipgateName || "").trim();
   if (!recorder) {
-    if (options && options.trigger !== "popup") notifyNameMissing();
+    if (options && options.trigger !== "popup") await notifyNameMissing();
     return {
       success: false,
       needsName: true,
@@ -587,15 +587,94 @@ chrome.commands.onCommand.addListener(async (command) => {
 // The shortcut and the call trigger can start a session with no UI open at
 // all. A silent refusal there looks exactly like a broken shortcut, so it has
 // to surface somewhere the operator will see it.
-function notifyNameMissing() {
+async function notifyNameMissing() {
+  // Three channels, because no single one is dependable here.
+  //
+  // A notification is the obvious choice and the least reliable: macOS gates
+  // Chrome's notifications behind its own Focus/Do Not Disturb and per-app
+  // permission, Windows does the same through Focus assist, and Chrome itself
+  // suppresses banners while a screen is being shared or presented. It can
+  // fail completely silently -- create() succeeds, nothing appears.
+  //
+  // So the badge is the source of truth (always visible, no permission can
+  // hide it), the popup is opened when Chrome allows it, and the notification
+  // is a bonus when the OS is willing.
+
+  // 1. Badge. Unmissable and unblockable.
   try {
-    chrome.notifications.create("sort-needs-name", {
-      type: "basic",
-      iconUrl: chrome.runtime.getURL("icons/idle128.png"),
-      title: "SORT did not start recording",
-      message: "Add your Sipgate name in SORT's settings first. It identifies your sessions when you share them.",
-      priority: 2
+    await chrome.action.setBadgeBackgroundColor({ color: "#E21A82" });
+    await chrome.action.setBadgeText({ text: "!" });
+    await chrome.action.setTitle({
+      title: "SORT: add your Sipgate name in Settings before recording"
     });
+  } catch (e) {}
+
+  // 2. The popup itself, on the field that is missing.
+  //
+  // The flag is set BEFORE the popup is opened, and it is set whether or not
+  // opening succeeds: a popup started by openPopup() gets no message and no
+  // arguments, so it has to find out for itself why it was opened. Without
+  // this it loads on Recordings and the operator is told nothing. Storing it
+  // also covers the case where Chrome refuses to open and the operator clicks
+  // the badge themselves a moment later.
+  //
+  // chrome.storage.session, not a worker variable: the worker can be torn down
+  // between the refusal and the popup reading it.
+  try { await chrome.storage.session.set({ nameWarning: true }); } catch (e) {}
+
+  // openPopup() needs a recent user gesture; pressing the shortcut counts, but
+  // Chrome refuses in some window states, so a failure here is expected and
+  // not worth reporting.
+  let popupOpened = false;
+  try {
+    if (chrome.action.openPopup) {
+      await chrome.action.openPopup();
+      popupOpened = true;
+    }
+  } catch (e) {}
+
+  // 3. Notification. Skipped when the popup is already showing the problem.
+  if (popupOpened) return;
+  try {
+    const id = await new Promise((resolve) => {
+      chrome.notifications.create("sort-needs-name", {
+        type: "basic",
+        iconUrl: chrome.runtime.getURL("icons/idle128.png"),
+        title: "SORT did not start recording",
+        message: "Add your Sipgate name in SORT's settings, then press the shortcut again.",
+        priority: 2,
+        requireInteraction: true
+      }, (createdId) => {
+        // Swallowing lastError is what hid this failing in the first place.
+        if (chrome.runtime.lastError) {
+          console.warn("SORT: notification suppressed:", chrome.runtime.lastError.message);
+          resolve(null);
+        } else resolve(createdId);
+      });
+    });
+
+    // Nothing was shown and no popup opened: the operator has only the badge.
+    // Say so in the worker log so this is diagnosable rather than mysterious.
+    if (!id) console.warn("SORT: could not show a notification; the toolbar badge is the only signal.");
+  } catch (e) {
+    console.warn("SORT: notification failed:", e);
+  }
+}
+
+// Clicking the notification should land on the field it is complaining about.
+chrome.notifications.onClicked.addListener((id) => {
+  if (id !== "sort-needs-name") return;
+  chrome.notifications.clear(id);
+  try { chrome.action.openPopup(); } catch (e) {}
+});
+
+// The badge is a standing complaint: clear it as soon as a name exists.
+async function clearNameWarning() {
+  try {
+    await chrome.action.setBadgeText({ text: "" });
+    await chrome.action.setTitle({ title: "SORT - ready" });
+    chrome.notifications.clear("sort-needs-name");
+    await chrome.storage.session.remove("nameWarning");
   } catch (e) {}
 }
 
@@ -780,6 +859,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case "saveConfig":
       saveConfig(message.config).then(() => {
+        // The "!" badge is a standing complaint about a missing name; retire it
+        // the moment one exists.
+        if (message.config && (message.config.sipgateName || "").trim()) clearNameWarning();
         // If recording, push new SOP steps to every tab's live tagger.
         if (activeSession && message.config && message.config.sopSteps) {
           activeSession.sopSteps = message.config.sopSteps.length
@@ -800,6 +882,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case "exportRecording":
       handleExportRecording(message.id).then(sendResponse);
+      return true;
+
+    // The popup asks, on open, whether it was summoned by a refused recording.
+    // Read-and-clear: the warning is for this one opening, not forever.
+    case "consumeNameWarning":
+      chrome.storage.session.get("nameWarning").then((v) => {
+        const pending = !!(v && v.nameWarning);
+        if (pending) chrome.storage.session.remove("nameWarning");
+        sendResponse({ pending });
+      }).catch(() => sendResponse({ pending: false }));
       return true;
 
     case "openImport":

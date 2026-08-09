@@ -258,6 +258,58 @@ list shows `9741 · #2`, with the suffix omitted entirely for a first recording.
   the operator opens it if they want to. Importing several bundles in a row no
   longer opens several tabs.
 
+## v2.23.3 - Timeline follows the playhead; refusal is visible
+
+**The log follows the video.** The highlighted row is useless once it has
+scrolled out of view, so the timeline now scrolls to keep it on screen, parking
+it a third of the way down so the next few actions stay visible.
+
+It does not fight you. Scrolling by hand suspends following -- reading ahead or
+looking back is the point of a timeline -- and a small hint says so. Following
+resumes on its own once the playhead catches up to where you are reading, or
+immediately if you seek the video or click a row. There is nothing to switch on.
+
+Two details that took care: the sticky SOP step header overlaps the top of the
+log, so a row is only "visible" below it (otherwise following stops one row
+early and the active row hides under the header); and `body { zoom }` scales
+`getBoundingClientRect` but not `scrollTop`, so the delta is converted back to
+layout pixels the same way the splitter does. `scrollIntoView` is deliberately
+not used -- it scrolls the nearest scrollable ancestor, which here can be the
+window, dragging the whole layout. Large jumps are instant, single steps glide,
+and `prefers-reduced-motion` turns gliding off.
+
+**The missing-name refusal was invisible.** `chrome.notifications.create()` was
+called without its callback, so `chrome.runtime.lastError` went unread and a
+suppressed notification failed silently -- which is what happened on both
+machines. Notifications are unreliable here by nature: macOS gates them behind
+Focus and per-app permission, Windows behind Focus assist, and Chrome suppresses
+banners while a screen is being shared, which is exactly when SORT is in use.
+
+So the signal no longer depends on them. A pink **!** badge appears on the
+toolbar icon -- always visible, nothing can suppress it -- with a matching
+tooltip, and SORT tries to open its own popup on the field that is missing.
+The notification is now a bonus rather than the mechanism, `lastError` is logged
+instead of swallowed, and the badge clears the moment a name is saved.
+
+## v2.23.4 - The summoned popup lands on the right field
+
+A popup opened by `chrome.action.openPopup()` receives no message and no
+arguments -- it is indistinguishable from the operator clicking the toolbar
+icon. So it opened on Recordings and said nothing, while the badge next to it
+complained about a field two tabs away.
+
+The worker now records the reason in `chrome.storage.session` before opening
+(session storage, not a worker variable: the worker can be torn down in
+between), and the popup asks for it on load. The flag is read-and-cleared, so
+it fires once -- reopening the popup afterwards behaves normally.
+
+The same flag covers the case where Chrome refuses to open the popup: click the
+badge yourself and you still land on the flagged field.
+
+Focus is deferred one frame, because the field is inside a hidden tab panel
+until the switch has laid out and both the scroll and the focus would otherwise
+be dropped.
+
 ## Toolbar icon states
 
 Green dot = installed and ready. Red dot = recording. The service worker swaps

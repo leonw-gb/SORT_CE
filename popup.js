@@ -233,8 +233,12 @@ function flagNameField(message) {
   const err = document.getElementById("sipgateError");
   field.classList.add("invalid");
   if (err) err.textContent = message || "Enter the name your recordings are shared under.";
-  field.scrollIntoView({ block: "center" });
-  field.focus();
+  // After the tab switch has laid out, or the field is still display:none and
+  // both the scroll and the focus are dropped on the floor.
+  requestAnimationFrame(() => {
+    field.scrollIntoView({ block: "center" });
+    field.focus();
+  });
 }
 
 function clearNameFlag() {
@@ -395,3 +399,17 @@ loadShortcut();
 loadConfig();
 loadRecordings();
 refreshStatus();
+
+// A popup opened by the worker (after a recording was refused for a missing
+// name) arrives with no message and no arguments -- it looks exactly like the
+// operator clicking the toolbar icon. So it asks the worker whether it was
+// summoned, and lands on the field that caused it rather than on Recordings.
+//
+// This runs after loadConfig() so the field is already populated; the flag is
+// read-and-cleared, so reopening the popup later shows the normal Recordings
+// tab.
+chrome.runtime.sendMessage({ type: "consumeNameWarning" }, (res) => {
+  if (!res || !res.pending) return;
+  showSettingsTab();
+  flagNameField("Add your name to start recording. Recordings are shared under it.");
+});

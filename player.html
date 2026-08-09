@@ -183,6 +183,20 @@
     .tab-lane.collapsed .tab-lane-body { display: none; }
 
     .row.playing { background: #16202c; box-shadow: inset 2px 0 0 var(--accent); }
+
+    /* The log scrolls; the hint floats over it without joining the scroll. */
+    .log-wrap { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+    .follow-hint {
+      position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%) translateY(6px);
+      padding: 6px 12px; border-radius: 14px; font-size: 11px;
+      background: var(--panel2); color: var(--muted); border: 1px solid var(--line2);
+      box-shadow: 0 2px 10px rgba(0,0,0,.28);
+      opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s;
+    }
+    .follow-hint.on { opacity: 1; transform: translateX(-50%) translateY(0); }
+    @media (prefers-reduced-motion: reduce) {
+      .follow-hint { transition: none; }
+    }
     .row { cursor: pointer; }
   </style>
 </head>
@@ -208,7 +222,12 @@
     </div>
     <div id="dragbar" role="separator" aria-orientation="horizontal"
          aria-label="Resize video and timeline" tabindex="0"></div>
-    <div id="log"></div>
+    <div class="log-wrap">
+      <div id="log"></div>
+      <div class="follow-hint" id="followHint" role="status">
+        Following paused &middot; scroll back to the highlighted step to resume
+      </div>
+    </div>
   </div>
 
   <script src="player.js"></script>

@@ -283,8 +283,112 @@ async function loadVideo() {
       if (Number(row.dataset.t) <= tMs) current = row;
       row.classList.remove("playing");
     });
-    if (current) current.classList.add("playing");
+    if (!current) return;
+    current.classList.add("playing");
+    followPlayhead(current);
   });
+}
+
+// ---- following the playhead ---------------------------------------------------
+// The highlighted row is useless once it has scrolled out of view, so the log
+// follows it. Two things this deliberately does NOT do:
+//
+// scrollIntoView() -- it scrolls the nearest scrollable ancestor, which on this
+// page can be the window, dragging the whole layout sideways. The log's own
+// scrollTop is set directly instead.
+//
+// Fight the operator. Scrolling by hand while the video plays is how you read
+// ahead or look back, and yanking the view away on the next tick makes the page
+// feel broken. A manual scroll suspends following until the current row comes
+// back into view on its own, or the video is seeked.
+const prefersReducedMotion = () =>
+  window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+let followEnabled = true;
+let programmaticScroll = false;
+let followResumeTimer = null;
+
+function initFollow() {
+  const log = document.getElementById("log");
+  if (!log) return;
+
+  // Clicking a row seeks the video, which is an explicit "put me here" -- so it
+  // re-arms following even if the operator had scrolled away.
+  log.addEventListener("click", (e) => {
+    if (e.target.closest(".row[data-t]")) { followEnabled = true; setFollowHint(false); }
+  });
+
+  log.addEventListener("scroll", () => {
+    // Our own scrolling must not read as the operator taking over.
+    if (programmaticScroll) return;
+    followEnabled = false;
+    setFollowHint(true);
+  }, { passive: true });
+
+  // A seek is an explicit "take me here", so it re-arms following.
+  if (videoEl) {
+    videoEl.addEventListener("seeking", () => {
+      followEnabled = true;
+      setFollowHint(false);
+    });
+  }
+}
+
+function setFollowHint(paused) {
+  const hint = document.getElementById("followHint");
+  if (!hint) return;
+  hint.classList.toggle("on", !!paused && videoReady);
+}
+
+function followPlayhead(row) {
+  const log = document.getElementById("log");
+  if (!log) return;
+
+  const logRect = log.getBoundingClientRect();
+  const rowRect = row.getBoundingClientRect();
+
+  // The sticky SOP step header overlaps the top of the viewport, so a row is
+  // "visible" only below it -- otherwise following stops one row too early and
+  // the active row sits hidden under the header.
+  const head = log.querySelector(".step-head");
+  const headH = head ? head.getBoundingClientRect().height : 0;
+
+  const topLimit = logRect.top + headH;
+  const bottomLimit = logRect.bottom;
+  const fullyVisible = rowRect.top >= topLimit && rowRect.bottom <= bottomLimit;
+
+  if (!followEnabled) {
+    // Following resumes on its own once the playhead catches up to where the
+    // operator is reading. No button to press, nothing to remember.
+    if (fullyVisible) { followEnabled = true; setFollowHint(false); }
+    return;
+  }
+
+  if (fullyVisible) return;
+
+  // body { zoom } scales getBoundingClientRect but NOT scrollTop or
+  // clientHeight, so the pixel delta has to be converted back to layout pixels
+  // -- the same correction the splitter makes. Without it the log overshoots by
+  // the zoom factor and the active row lands off screen in the other direction.
+  const ZOOM = parseFloat(getComputedStyle(document.body).zoom) || 1;
+  const deltaCss = rowRect.top - logRect.top - headH;
+
+  // Park the row a third of the way down rather than at the very top: the next
+  // few actions stay on screen, which is what you want while watching.
+  const target = log.scrollTop + deltaCss / ZOOM - log.clientHeight / 3;
+
+  programmaticScroll = true;
+  log.scrollTo({
+    top: Math.max(0, target),
+    // Jumping is correct for a large gap (a seek), gliding for the next row.
+    behavior: prefersReducedMotion() || Math.abs(target - log.scrollTop) > log.clientHeight * 1.5
+      ? "auto" : "smooth"
+  });
+
+  // scrollend is not in every Chrome we run on, so release the guard on a
+  // timer as well. Releasing early would make our own scroll disable following.
+  clearTimeout(followResumeTimer);
+  followResumeTimer = setTimeout(() => { programmaticScroll = false; }, 450);
 }
 
 function loadVideoBlob(id) {
@@ -1070,7 +1174,7 @@ async function init() {
   renderChips();
   renderTabFilter();
   render();
-  loadVideo().then(initSplitter);
+  loadVideo().then(() => { initSplitter(); initFollow(); });
 
   document.getElementById("search").addEventListener("input", (e) => {
     searchQ = e.target.value.trim().toLowerCase(); render();
