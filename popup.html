@@ -213,6 +213,32 @@
     .btn-primary { background: var(--accent); color: #fff; width: 100%; }
     .btn-primary:hover { background: var(--accent-hi); }
 
+    /* ---- Import ---- */
+    .import-bar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 0 0 12px; margin-bottom: 12px;
+      border-bottom: 1px solid var(--edge);
+    }
+    .import-bar span { font-size: 11px; color: var(--ink-faint); line-height: 1.3; }
+    .btn-import {
+      flex: none; padding: 7px 12px; border-radius: 5px; cursor: pointer;
+      border: 1px solid var(--edge2); background: var(--surface2); color: var(--ink);
+      font-size: 12px; font-weight: 600; font-family: inherit; transition: all .15s;
+    }
+    .btn-import:hover { border-color: var(--accent); color: var(--accent); }
+    .btn-import:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+
+    /* A colleague's session must never read as one of mine. */
+    .recording-item.imported { border-left: 3px solid var(--link); }
+    .ticket-tag.imported { background: var(--tag-bg); color: var(--tag-ink); }
+
+    /* ---- Required field ---- */
+    .req { color: var(--accent); margin-left: 2px; }
+    .setting input.invalid, .setting textarea.invalid {
+      border-color: var(--accent); box-shadow: 0 0 0 2px rgba(226,26,130,.12);
+    }
+    .field-error { font-size: 11px; color: var(--accent); margin-top: 5px; line-height: 1.4; }
+
     /* ---- Recordings list ---- */
     .recording-list { overflow-x: hidden; }
     .recording-item {
@@ -336,9 +362,11 @@
     <fieldset>
       <legend>Identity</legend>
       <div class="setting">
-        <label for="sipgateName">Sipgate name</label>
-        <input type="text" id="sipgateName" placeholder="Your name">
-        <div class="help-text">Used later to match your own calls. Type it exactly as Sipgate shows it.</div>
+        <label for="sipgateName">Sipgate name<span class="req" aria-hidden="true">*</span></label>
+        <input type="text" id="sipgateName" placeholder="Your name" required aria-describedby="sipgateHelp">
+        <div class="field-error" id="sipgateError" role="alert"></div>
+        <div class="help-text" id="sipgateHelp">Required. Identifies your recordings when you
+          share them, and matches your own calls. Type it exactly as Sipgate shows it.</div>
       </div>
     </fieldset>
 

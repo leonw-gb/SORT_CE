@@ -37,6 +37,44 @@ function loadRecording(id) {
   }));
 }
 
+// ---- source-agnostic loading -------------------------------------------------
+// Everything below this line renders {meta, events, videoUrl} and does not care
+// where they came from. Today there is one source; when the upload server grows
+// a viewer it becomes a second SOURCES entry and nothing downstream changes.
+const SOURCES = {
+  // A recording in this browser's IndexedDB -- ours or imported.
+  local: {
+    async load(id) {
+      const rec = await loadRecording(id);
+      if (!rec) return null;
+      return {
+        meta: {
+          id: rec.id,
+          startTime: rec.startTime,
+          endTime: rec.endTime,
+          recorder: rec.recorder || null,
+          imported: !!rec.imported,
+          sourceId: rec.sourceId || null,
+          ticket: rec.ticket || null,
+          videoStartOffset: (rec.video && rec.video.startOffset) || 0
+        },
+        events: rec.events || [],
+        tabs: rec.tabs || {},
+        sopSteps: rec.sopSteps || [],
+        video: rec.video || null,
+        // Deferred: the timeline must render even when the video is hundreds
+        // of megabytes, so the blob is only fetched when the player asks.
+        getVideo: () => loadVideo(id)
+      };
+    }
+  }
+};
+
+function sourceFor() {
+  const p = new URLSearchParams(location.search);
+  return { name: p.get("src") || "local", id: p.get("id") };
+}
+
 // ---- formatting --------------------------------------------------------------
 function fmtClock(ms) {
   const s = Math.floor(ms / 1000);
@@ -166,6 +204,22 @@ let videoEl = null;
 let videoOffsetMs = 0;
 let videoReady = false;
 let videoObjectUrl = null;
+let currentSource = null;
+
+// An imported session is someone else's work. Say so once, at the top, so the
+// timeline is never read as a record of what I did.
+function renderProvenance(meta) {
+  if (!meta || !meta.imported) return;
+  const bar = document.getElementById("provenance");
+  if (!bar) return;
+  const who = meta.recorder || "an unknown colleague";
+  const when = meta.startTime
+    ? new Date(meta.startTime).toLocaleString(undefined,
+        { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    : "an unknown time";
+  bar.innerHTML = `<b>Imported session</b> &middot; recorded by ${esc(who)} on ${esc(when)}`;
+  bar.classList.add("on");
+}
 
 function eventToVideoTime(ev) {
   return Math.max(0, ((ev.relativeTime || 0) - videoOffsetMs) / 1000);
@@ -183,7 +237,7 @@ async function loadVideo() {
   // round-trip inflated long recordings past what a single string can hold.
   let rec = null;
   try {
-    rec = await loadVideoBlob(recording.id);
+    rec = currentSource ? await currentSource.getVideo() : await loadVideoBlob(recording.id);
   } catch (e) {
     rec = null;
   }
@@ -952,16 +1006,41 @@ function buildCopyText() {
 
 // ---- init --------------------------------------------------------------------
 async function init() {
-  const id = getRecordingId();
+  const { name: srcName, id } = sourceFor();
   const log = document.getElementById("log");
   if (!id) { log.innerHTML = `<div id="empty">No recording id in the URL.</div>`; return; }
+
+  const source = SOURCES[srcName];
+  if (!source) {
+    log.innerHTML = `<div id="empty">Unknown session source "${esc(srcName)}".</div>`;
+    return;
+  }
+
+  let loaded;
   try {
-    recording = await loadRecording(id);
+    loaded = await source.load(id);
   } catch (e) {
     log.innerHTML = `<div id="empty">Could not load recording: ${esc(e.message || e)}</div>`;
     return;
   }
-  if (!recording) { log.innerHTML = `<div id="empty">Recording not found.</div>`; return; }
+  if (!loaded) { log.innerHTML = `<div id="empty">Recording not found.</div>`; return; }
+
+  // The rest of the player reads `recording`; keep that shape so the loader is
+  // the only thing that knows about sources.
+  recording = {
+    id: loaded.meta.id,
+    startTime: loaded.meta.startTime,
+    endTime: loaded.meta.endTime,
+    recorder: loaded.meta.recorder,
+    imported: loaded.meta.imported,
+    ticket: loaded.meta.ticket,
+    events: loaded.events,
+    tabs: loaded.tabs,
+    sopSteps: loaded.sopSteps,
+    video: loaded.video
+  };
+  currentSource = loaded;
+  renderProvenance(loaded.meta);
 
   events = (recording.events || [])
     .filter((e) => e.type !== "rrweb")           // lean mode: no DOM stream anyway

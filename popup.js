@@ -20,7 +20,14 @@ document.getElementById("btnRecord").addEventListener("click", () => {
   if (!sessionActive) {
     // Video is not optional: a timeline without the screen it happened on is
     // half a recording, and the operator should not be able to ship one.
-    chrome.runtime.sendMessage({ type: "startSession", options: {} }, (res) => {
+    chrome.runtime.sendMessage({ type: "startSession", options: { trigger: "popup" } }, (res) => {
+      // No name, no recording. Send the operator to the field rather than
+      // telling them a rule and leaving them to find it.
+      if (res && res.needsName) {
+        showSettingsTab();
+        flagNameField(res.error);
+        return;
+      }
       if (res && res.success) {
         setSessionUI(true);
         // A capture failure must be loud: the session runs either way, but the
@@ -109,15 +116,18 @@ function loadRecordings() {
     // Redraw only on real change. Rewriting innerHTML on a timer would swallow
     // a click that lands in the same tick.
     const sig = JSON.stringify((recordings || []).map(r =>
-      [r.id, r.endTime, r.events.length, r.ticket ? [r.ticket.ref, r.ticket.seq, r.ticket.pending, r.ticket.uploadUrl] : 0]));
+      [r.id, r.endTime, r.events.length, r.imported ? 1 : 0,
+       r.ticket ? [r.ticket.ref, r.ticket.seq, r.ticket.pending, r.ticket.uploadUrl] : 0]));
     if (sig === lastListSignature) return;
     lastListSignature = sig;
     if (!recordings || recordings.length === 0) {
-      list.innerHTML = '<div class="empty-state">No recordings yet — press Start to begin.</div>';
+      list.innerHTML = importBar() +
+        '<div class="empty-state">No recordings yet — press Start to begin, or import a colleague\'s session.</div>';
+      wireImport(list);
       return;
     }
 
-    list.innerHTML = recordings
+    list.innerHTML = importBar() + recordings
       .sort((a, b) => b.startTime - a.startTime)
       .map(rec => {
         const tabCount = Object.keys(rec.tabs || {}).length;
@@ -130,23 +140,29 @@ function loadRecordings() {
           ? `<span class="ticket-tag">${t.ref}_${String(t.seq).padStart(3, "0")}</span>`
           : (unfinished ? `<span class="ticket-tag pending">Not assigned</span>` : "");
         const link = t && t.uploadUrl
-          ? ` &middot; <a href="${t.uploadUrl}" target="_blank" style="color:#2b6cb0">video link</a>` : "";
+          ? ` &middot; <a href="${t.uploadUrl}" target="_blank" style="color:var(--link)">video link</a>` : "";
+        // Someone else's session sitting in my list is confusing unless it says
+        // so. The name comes from the bundle, so it is the recorder's, not mine.
+        const from = rec.imported
+          ? `<span class="ticket-tag imported">from ${esc(rec.recorder || "unknown")}</span>` : "";
         return `
-        <div class="recording-item">
+        <div class="recording-item${rec.imported ? " imported" : ""}">
           <div class="recording-item-header">
             <span>${formatDate(rec.startTime)}</span>
-            <span style="color:#aaa">${dur}</span>
+            <span style="color:var(--ink-faint)">${dur}</span>
           </div>
-          <div class="recording-meta">${tag}${tabCount} tab(s) &middot; ${rec.events.length} events${link}</div>
+          <div class="recording-meta">${from}${tag}${tabCount} tab(s) &middot; ${rec.events.length} events${link}</div>
           <div class="recording-actions">
-            ${unfinished ? `<button data-action="ticket" data-id="${rec.id}">Assign ticket</button>` : ""}
+            ${unfinished && !rec.imported ? `<button data-action="ticket" data-id="${rec.id}">Assign ticket</button>` : ""}
             <button data-action="replay" data-id="${rec.id}">▶ Replay</button>
-            <button data-action="export" data-id="${rec.id}">Export JSON</button>
+            ${rec.imported ? "" : `<button data-action="export" data-id="${rec.id}">Export</button>`}
             <button data-action="delete" data-id="${rec.id}" class="danger">Delete</button>
           </div>
         </div>`;
       })
       .join("");
+
+    wireImport(list);
 
     list.querySelectorAll("button[data-action]").forEach(btn => {
       btn.addEventListener("click", () => {
@@ -156,21 +172,73 @@ function loadRecordings() {
           window.close();
         }
         if (action === "replay")  openReplay(id);
-        if (action === "export")  exportRecording(id);
+        if (action === "export")  exportRecording(id, btn);
         if (action === "delete")  deleteRecording(id);
       });
     });
   });
 }
 
+function importBar() {
+  return `<div class="import-bar">
+      <button id="btnImport" class="btn-import">Import a session…</button>
+      <span>Open a .sortz bundle from a colleague</span>
+    </div>`;
+}
+
+function wireImport(list) {
+  const b = list.querySelector("#btnImport");
+  if (b) b.addEventListener("click", openImport);
+}
+
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 function openReplay(id) {
   chrome.tabs.create({ url: chrome.runtime.getURL(`player.html?id=${encodeURIComponent(id)}`) });
 }
 
-function exportRecording(id) {
+function exportRecording(id, btn) {
+  // A bundle with video is hundreds of megabytes and takes a few seconds to
+  // write. The worker keeps going if this popup closes; the button just stops
+  // reporting. Say so rather than looking frozen.
+  if (btn) { btn.disabled = true; btn.textContent = "Exporting…"; }
+  showToast("Building the bundle. This keeps running if you close SORT.", 4000);
+
   chrome.runtime.sendMessage({ type: "exportRecording", id }, (res) => {
-    showToast(res?.success ? "Exported to Downloads" : "Export failed");
+    if (btn) { btn.disabled = false; btn.textContent = "Export"; }
+    if (res && res.success) showToast(`Saved ${res.filename} to Downloads`, 4000);
+    else showToast(res?.error || "The export did not finish.", 5000);
   });
+}
+
+function openImport() {
+  chrome.runtime.sendMessage({ type: "openImport" }, () => window.close());
+}
+
+// ---- Settings validation -----------------------------------------------------
+function showSettingsTab() {
+  document.querySelectorAll(".tab-button").forEach(b =>
+    b.classList.toggle("active", b.dataset.tab === "settings"));
+  document.querySelectorAll(".tab-content").forEach(c =>
+    c.classList.toggle("active", c.id === "settings"));
+}
+
+function flagNameField(message) {
+  const field = document.getElementById("sipgateName");
+  const err = document.getElementById("sipgateError");
+  field.classList.add("invalid");
+  if (err) err.textContent = message || "Enter the name your recordings are shared under.";
+  field.scrollIntoView({ block: "center" });
+  field.focus();
+}
+
+function clearNameFlag() {
+  document.getElementById("sipgateName").classList.remove("invalid");
+  const err = document.getElementById("sipgateError");
+  if (err) err.textContent = "";
 }
 
 function deleteRecording(id) {
@@ -201,10 +269,19 @@ function currentConfig() {
 }
 
 document.getElementById("saveConfig").addEventListener("click", () => {
+  // Required, because it is the only thing that says whose session a shared
+  // bundle is. Everything else here has a sane default; this cannot.
+  if (!val("sipgateName")) {
+    flagNameField("Enter your name before saving. Recordings are shared under it.");
+    return;
+  }
+  clearNameFlag();
   chrome.runtime.sendMessage({ type: "saveConfig", config: currentConfig() }, () => {
     showToast("Settings saved");
   });
 });
+
+document.getElementById("sipgateName").addEventListener("input", clearNameFlag);
 
 // ---- Keyboard shortcut -------------------------------------------------------
 // Read-only here by design: chrome.commands has no setter, and Chrome's own

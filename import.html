@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<title>Import a SORT session</title>
+<style>
+  :root, [data-theme="dark"] {
+    --page:#12161c; --surface:#181d25; --surface2:#1f2530; --edge:#2a323f;
+    --edge2:#39424f; --ink:#e8eaed; --ink-strong:#ffffff; --ink-soft:#9aa4b2;
+    --ink-faint:#6b7686; --accent:#E21A82; --accent-hi:#BD166D;
+    --ok:#2e9e70; --err:#f08a80; --link:#7dd3fc;
+  }
+  [data-theme="light"] {
+    --page:#f5f6f8; --surface:#ffffff; --surface2:#f0f1f4; --edge:#e2e4e9;
+    --edge2:#d6dae0; --ink:#20242b; --ink-strong:#0d1015; --ink-soft:#6b7280;
+    --ink-faint:#9aa1ab; --accent:#E21A82; --accent-hi:#BD166D;
+    --ok:#1f7a55; --err:#c0392b; --link:#2b6cb0;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background:var(--page); color:var(--ink); font-size:13px;
+    min-height:100vh; display:flex; align-items:center; justify-content:center; padding:32px;
+  }
+  .card { width:100%; max-width:460px; }
+  h1 { font-size:17px; font-weight:650; margin-bottom:4px; color:var(--ink-strong); }
+  .sub { color:var(--ink-soft); margin-bottom:20px; line-height:1.5; }
+
+  .drop {
+    border:1.5px dashed var(--edge2); border-radius:10px; background:var(--surface);
+    padding:34px 24px; text-align:center; cursor:pointer; transition:border-color .15s, background .15s;
+  }
+  .drop:hover, .drop.over { border-color:var(--accent); background:var(--surface2); }
+  .drop:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .drop strong { display:block; font-size:14px; margin-bottom:5px; color:var(--ink-strong); }
+  .drop span { color:var(--ink-faint); font-size:12px; }
+
+  .panel {
+    margin-top:16px; background:var(--surface); border:1px solid var(--edge);
+    border-radius:10px; padding:16px; display:none;
+  }
+  .panel.show { display:block; }
+  .row { display:flex; justify-content:space-between; gap:12px; padding:6px 0; border-bottom:1px dashed var(--edge); font-size:12px; }
+  .row:last-of-type { border-bottom:none; }
+  .row span { color:var(--ink-soft); flex:none; }
+  .row b { font-weight:600; text-align:right; min-width:0; overflow-wrap:anywhere; }
+
+  .note { margin-top:12px; font-size:12px; line-height:1.5; color:var(--ink-soft); }
+  .note.warn { color:#e0a33e; }
+  .note.err  { color:var(--err); }
+
+  .actions { display:flex; gap:8px; margin-top:16px; }
+  .btn {
+    flex:1; padding:10px 16px; border:none; border-radius:6px; cursor:pointer;
+    font-size:13px; font-weight:600; font-family:inherit; transition:background .15s;
+  }
+  .btn-primary { background:var(--accent); color:#fff; }
+  .btn-primary:hover:not(:disabled) { background:var(--accent-hi); }
+  .btn-primary:disabled { opacity:.5; cursor:default; }
+  .btn-secondary { background:var(--surface2); border:1px solid var(--edge2); color:var(--ink); }
+  .btn-secondary:hover { border-color:var(--accent); color:var(--accent); }
+  .btn:focus-visible { outline:2px solid var(--link); outline-offset:2px; }
+
+  .bar { height:4px; background:var(--surface2); border-radius:2px; overflow:hidden; margin-top:14px; display:none; }
+  .bar.show { display:block; }
+  .bar i { display:block; height:100%; width:0; background:var(--accent); transition:width .2s; }
+  #status { margin-top:10px; font-size:12px; color:var(--ink-soft); min-height:16px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Import a session</h1>
+    <p class="sub">Open a <code>.sortz</code> bundle exported from someone else's
+      SORT. It joins your recordings list, marked with their name.</p>
+
+    <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose a .sortz bundle">
+      <strong>Choose a bundle</strong>
+      <span>or drop a .sortz file here</span>
+    </div>
+    <input type="file" id="file" accept=".sortz,application/zip" hidden>
+
+    <div class="panel" id="panel">
+      <div class="row"><span>Recorded by</span><b id="mRecorder">—</b></div>
+      <div class="row"><span>Recorded on</span><b id="mDate">—</b></div>
+      <div class="row"><span>Duration</span><b id="mDur">—</b></div>
+      <div class="row"><span>Events</span><b id="mEvents">—</b></div>
+      <div class="row"><span>Ticket</span><b id="mTicket">—</b></div>
+      <div class="row"><span>Video</span><b id="mVideo">—</b></div>
+      <div class="note" id="note"></div>
+      <div class="bar" id="bar"><i id="barFill"></i></div>
+      <div id="status"></div>
+      <div class="actions">
+        <button class="btn btn-secondary" id="cancel">Choose another</button>
+        <button class="btn btn-primary" id="confirm">Import session</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="sortz.js"></script>
+  <script src="import.js"></script>
+</body>
+</html>

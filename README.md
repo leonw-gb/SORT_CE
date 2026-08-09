@@ -21,6 +21,10 @@ to later train an AI to solve the issues itself.
   tagger.css           Styling for the floating SOP tagger
   popup.html/.js       Settings, live session controls, recordings list
   player.html/.js      Visual replay + correlated SOP timeline viewer
+  sortz.js             .sortz session bundle: read and write (no DOM, reusable)
+  offscreen.html/.js   Builds bundles off the worker (blob URLs + survives idle)
+  import.html/.js      Import window: preview a bundle, then store it
+  SESSION-FORMAT.md    Bundle schema + the upload-server contract
   lib/                 rrweb + rrweb-player (PLACEHOLDERS - see below)
 
 ## Enable rrweb DOM replay (one-time, needs internet on your machine)
@@ -167,6 +171,52 @@ back. Two causes, both fixed:
     nearest sized ancestor (the player holder), falling back to the replay
     viewport, and prefers the exact captured element by mirror id.
 
+
+
+## Sharing sessions (v2.23.0)
+
+A session can be handed to someone else as a **`.sortz` bundle**: a ZIP holding
+the manifest, the event timeline and the video, complete enough to open on a
+machine that never saw the recording.
+
+**Export** — the Export button on any of your own recordings. The bundle is
+built in an offscreen document, not in the popup, because Chrome closes a popup
+the moment focus moves and a few hundred megabytes takes longer than that.
+Clicking away no longer kills the export.
+
+**Import** — *Import a session…* above the recordings list. The bundle is shown
+first (who recorded it, when, how long, how big) and only stored once you
+confirm, because an import costs the same disk as a recording.
+
+An imported session gets a **fresh local id**; recording ids are minted per
+machine, so without a remap an import can collide with one of your own and
+silently overwrite it. The original travels on as `sourceId`, which is also how
+a repeat import is recognised. Imported sessions are marked in the list with the
+recorder's name and cannot be re-exported or assigned to a ticket — they are
+someone else's record.
+
+The video is embedded in the bundle rather than linked. Uploaded videos are
+deleted from the upload server after the retention period, and a bundle that
+carried only a link would decay into a timeline with a dead player. **The bundle
+is the durable copy of a session.**
+
+Long term the upload server hosts sessions itself and the ticket gets a session
+link instead of a video link. `SESSION-FORMAT.md` has the schema and the
+endpoint contract; `upload.js` already prefers a `session_url` when the server
+returns one, so that switch needs no extension release.
+
+## The Sipgate name is required (v2.23.0)
+
+Recording will not start without it. The check sits in `startSession`, so it
+covers the popup button, the keyboard shortcut and the call trigger alike —
+putting it in the popup would leave the shortcut free to produce anonymous
+sessions. Refusal happens *before* the screen picker opens, so nobody chooses a
+window for a recording that is about to be turned down. Started by shortcut, the
+refusal arrives as a Chrome notification, since there is no popup to show it in.
+
+The name is stamped onto the session when recording starts, so a bundle says who
+made it, not who sent it on. Sessions recorded before 2.23.0 have no name and
+show as "Unknown".
 
 ## Toolbar icon states
 

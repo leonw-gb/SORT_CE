@@ -166,15 +166,30 @@ async function run(action) {
     const { name, path } = await saveToDisk(ref, seq.next);
     setStatus(`Saved as ${path}.`, "ok");
 
+    // ONE link goes on the ticket, whatever it points at. Today the upload
+    // server returns a video URL; when it can host a session (timeline plus
+    // video, see SESSION-FORMAT.md) it returns a session URL instead and this
+    // stays a single value that the rest of the flow does not have to know
+    // about. That is the whole reason it is not called videoUrl.
     let link = null;
+    let linkKind = "video";
     if (action === "upload" || action === "odoo") {
       setStatus(`Uploading ${name}…`);
-      link = await uploadVideo({
+      const up = await uploadVideo({
         baseUrl: cfg.upload.url,
         blob: videoBlob,
         filename: name,
         onProgress: setProgress
       });
+      // uploadVideo resolves to a string today. Accept the richer shape too so
+      // the server can start returning a session URL without a lockstep
+      // extension release.
+      if (up && typeof up === "object") {
+        link = up.sessionUrl || up.url || null;
+        linkKind = up.sessionUrl ? "session" : "video";
+      } else {
+        link = up;
+      }
       barEl.classList.remove("on");
       setStatus(`Uploaded. Link: ${link}`, "ok");
     }
@@ -194,13 +209,13 @@ async function run(action) {
         ref, seq: seq.next, filename: name, path,
         odooId: selected ? selected.id : null,
         subject: selected ? selected.name : null,
-        uploadUrl: link, odooUpdated: odooDone
+        uploadUrl: link, linkKind, odooUpdated: odooDone
       }
     });
 
     statusEl.innerHTML =
       `<span style="color:var(--ok)">Done.</span> Saved as ${esc(path)}` +
-      (link ? ` · <a href="${esc(link)}" target="_blank">Open the video</a>` : "") +
+      (link ? ` · <a href="${esc(link)}" target="_blank">Open the ${linkKind === "session" ? "session" : "video"}</a>` : "") +
       (odooDone ? ` · added to ticket ${esc(ref)}` : "");
     setTimeout(() => window.close(), 4000);
 

@@ -35,9 +35,14 @@ function uploadVideo({ baseUrl, blob, filename, onProgress }) {
       let data;
       try { data = JSON.parse(xhr.responseText); }
       catch (e) { reject(new Error("The upload server returned a response we cannot read")); return; }
-      const link = data.watch_url || data.raw_url || "";
+      // session_url wins when the server can host a full session (timeline +
+      // video). watch_url/raw_url are the video-only fallbacks it returns
+      // today. Returning the shape rather than a bare string lets the caller
+      // label the link correctly without sniffing the URL.
+      const sessionUrl = data.session_url || "";
+      const link = sessionUrl || data.watch_url || data.raw_url || "";
       if (!link) { reject(new Error("The upload finished but the server returned no link")); return; }
-      resolve(link);
+      resolve(sessionUrl ? { url: link, sessionUrl } : { url: link, sessionUrl: null });
     };
     xhr.send(form);
   });

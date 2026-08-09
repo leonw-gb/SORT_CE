@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>SORT worker</title></head>
+<body>
+<!-- Invisible. Exists because a service worker cannot call
+     URL.createObjectURL, and a session bundle is far too large to pass
+     through a data: URL. The worker asks this document to build the bundle
+     and hand back a blob: URL for chrome.downloads. -->
+<script src="sortz.js"></script>
+<script src="offscreen.js"></script>
+</body>
+</html>

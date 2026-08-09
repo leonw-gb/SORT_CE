@@ -236,6 +236,23 @@ async function startSession(options) {
   }
 
   const config = await getConfig();
+
+  // A recording with no name on it cannot be shared usefully: the moment it
+  // leaves this machine as a bundle, "who recorded this" has no answer. The
+  // check lives here rather than in the popup because the keyboard shortcut
+  // and the call trigger both reach startSession without the popup ever
+  // opening. Refuse BEFORE startCapture, so nobody picks a screen for a
+  // session that is about to be turned down.
+  const recorder = (config.sipgateName || "").trim();
+  if (!recorder) {
+    if (options && options.trigger !== "popup") notifyNameMissing();
+    return {
+      success: false,
+      needsName: true,
+      error: "Add your Sipgate name in Settings before recording. It identifies your sessions when you share them."
+    };
+  }
+
   const sopSteps = (config.sopSteps && config.sopSteps.length) ? config.sopSteps : DEFAULT_SOP_STEPS;
 
   // Screen capture first: the operator picks a window BEFORE the clock starts,
@@ -262,6 +279,11 @@ async function startSession(options) {
     // Calls seen during this session. The first one decides the ticket the
     // dialog pre-selects; the rest are context for the timeline.
     calls: [],
+    // Stamped at record time, not export time: this says who made the
+    // recording, not who happened to send it on.
+    recorder,
+    imported: false,
+    sourceId: null,
     metadata: { manualStart: !(options && options.trigger === "call"), trigger: (options && options.trigger) || "manual" }
   };
   if (options && options.trigger === "call") attachCallToSession(options.call || {});
@@ -551,11 +573,57 @@ chrome.commands.onCommand.addListener(async (command) => {
   if (activeSession) {
     await stopSession();
   } else {
-    await startSession({});
+    const res = await startSession({ trigger: "shortcut" });
+    // A refusal here has no popup to report into; startSession has already
+    // raised a notification. Do not open a capture window for a session that
+    // never started.
+    if (!res || !res.success) return;
     // The capture window opens focused with the Share button ready; the picker
     // still needs the operator's click.
     focusCaptureWindow();
   }
+});
+
+// The shortcut and the call trigger can start a session with no UI open at
+// all. A silent refusal there looks exactly like a broken shortcut, so it has
+// to surface somewhere the operator will see it.
+function notifyNameMissing() {
+  try {
+    chrome.notifications.create("sort-needs-name", {
+      type: "basic",
+      iconUrl: chrome.runtime.getURL("icons/idle128.png"),
+      title: "SORT did not start recording",
+      message: "Add your Sipgate name in SORT's settings first. It identifies your sessions when you share them.",
+      priority: 2
+    });
+  } catch (e) {}
+}
+
+// ---- Import ------------------------------------------------------------------
+let importWindowId = null;
+
+async function openImportWindow() {
+  // Focus the one already open rather than stacking windows.
+  if (importWindowId !== null) {
+    try { await chrome.windows.update(importWindowId, { focused: true }); return; }
+    catch (e) { importWindowId = null; }
+  }
+  const url = chrome.runtime.getURL("import.html");
+  const W = 560, H = 620;
+  let left, top;
+  try {
+    const cur = await chrome.windows.getLastFocused();
+    left = Math.max(0, Math.round(cur.left + (cur.width - W) / 2));
+    top = Math.max(0, Math.round(cur.top + (cur.height - H) / 2));
+  } catch (e) {}
+  try {
+    const win = await chrome.windows.create({ url, type: "popup", width: W, height: H, left, top, focused: true });
+    importWindowId = win.id;
+  } catch (e) {}
+}
+
+chrome.windows.onRemoved.addListener((id) => {
+  if (id === importWindowId) importWindowId = null;
 });
 
 async function focusCaptureWindow() {
@@ -733,27 +801,75 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case "exportRecording":
       handleExportRecording(message.id).then(sendResponse);
       return true;
+
+    case "openImport":
+      openImportWindow();
+      sendResponse({ success: true });
+      return false;
+
+    case "importFinished":
+      broadcastRecordingsChanged();
+      sendResponse({ success: true });
+      return false;
   }
 });
 
-// ---- Export ------------------------------------------------------------------
+// ---- Export: .sortz session bundle -------------------------------------------
+// The bundle is built in an offscreen document, not here. A service worker has
+// no URL.createObjectURL, and it is torn down after ~30s idle -- which is well
+// inside the time a 300 MB bundle takes to write. The offscreen document has
+// both, and unlike the popup it does not die when the operator clicks away.
+let offscreenReady = null;
+
+async function ensureOffscreen() {
+  if (offscreenReady) return offscreenReady;
+  offscreenReady = (async () => {
+    const existing = await chrome.runtime.getContexts({
+      contextTypes: ["OFFSCREEN_DOCUMENT"]
+    });
+    if (existing && existing.length) return;
+    await chrome.offscreen.createDocument({
+      url: chrome.runtime.getURL("offscreen.html"),
+      reasons: ["BLOBS"],
+      justification: "Assemble a session bundle and hand back a blob URL for download."
+    });
+  })();
+  try { await offscreenReady; } catch (e) { offscreenReady = null; throw e; }
+  return offscreenReady;
+}
+
 async function handleExportRecording(recordingId) {
-  const db = await initDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(RECORDINGS_STORE, "readonly");
-    const req = tx.objectStore(RECORDINGS_STORE).get(recordingId);
-    req.onsuccess = () => {
-      const recording = req.result;
-      if (!recording) { reject(new Error("Recording not found")); return; }
-      const jsonStr = JSON.stringify(recording, null, 2);
-      const url = "data:application/json;charset=utf-8," + encodeURIComponent(jsonStr);
-      const timestamp = new Date(recording.startTime).toISOString().replace(/[:.]/g, "-");
-      chrome.downloads.download({ url, filename: `recording_${timestamp}.json`, saveAs: false }, () => {
-        resolve({ success: true });
-      });
+  try {
+    await ensureOffscreen();
+    const res = await chrome.runtime.sendMessage({
+      target: "offscreen", type: "buildBundle", id: recordingId
+    });
+    if (!res || !res.success) {
+      return { success: false, error: (res && res.error) || "The bundle could not be built." };
+    }
+
+    const downloadId = await chrome.downloads.download({
+      url: res.url,
+      filename: res.filename,
+      saveAs: false,
+      conflictAction: "uniquify"
+    });
+
+    // Hold the blob URL until the bytes are on disk, then let it go: an
+    // un-revoked bundle URL pins the whole video in memory.
+    const onChanged = (delta) => {
+      if (delta.id !== downloadId || !delta.state) return;
+      if (delta.state.current === "complete" || delta.state.current === "interrupted") {
+        chrome.downloads.onChanged.removeListener(onChanged);
+        chrome.runtime.sendMessage({ target: "offscreen", type: "revokeUrl", url: res.url }).catch(() => {});
+      }
     };
-    req.onerror = () => reject(req.error);
-  });
+    chrome.downloads.onChanged.addListener(onChanged);
+
+    return { success: true, filename: res.filename, size: res.size };
+  } catch (e) {
+    return { success: false, error: String(e.message || e) };
+  }
 }
 
 // ---- Tab lifecycle: inject into new tabs while recording ---------------------
