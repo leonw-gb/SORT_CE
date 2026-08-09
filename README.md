@@ -247,6 +247,17 @@ and belongs to the video filename, not the ticket. Pasted into Odoo it finds
 nothing. The import preview now shows `9741 (recording 2)` and the recordings
 list shows `9741 · #2`, with the suffix omitted entirely for a first recording.
 
+## v2.23.2 - Import wording and flow
+
+- The import preview's **Ticket** row is now **Session**, and shows the full
+  session identifier again (`9741_002`). It is the same string as the video
+  filename and the ticket link, so it is a thing you can search for; the earlier
+  split into "9741 (recording 2)" made it unmatchable.
+- The recordings list shows the same identifier after the recorder's name.
+- **Importing no longer opens the timeline.** The session lands in the list and
+  the operator opens it if they want to. Importing several bundles in a row no
+  longer opens several tabs.
+
 ## Toolbar icon states
 
 Green dot = installed and ready. Red dot = recording. The service worker swaps

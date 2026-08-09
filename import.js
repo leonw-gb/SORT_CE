@@ -125,12 +125,12 @@ async function preview(file) {
   $("mDate").textContent = fmtDate(session.startTime);
   $("mDur").textContent = fmtDur(dur);
   $("mEvents").textContent = String((session.events || []).length);
-  // The ticket is the ticket. The _NNN suffix belongs to the video FILENAME --
-  // it numbers repeat recordings of the same ticket -- and printing it here
-  // read as though the ticket number were 9741_002.
+  // ticket_seq, e.g. 9741_002: the session identifier, matching the video
+  // filename and what the ticket links to. The row is labelled "Session", not
+  // "Ticket", so this reads as an identifier rather than a ticket number.
   const tk = manifest.ticket;
   $("mTicket").textContent = tk && tk.ref
-    ? (tk.seq > 1 ? `${tk.ref} (recording ${tk.seq})` : String(tk.ref))
+    ? `${tk.ref}_${String(tk.seq || 1).padStart(3, "0")}`
     : "not assigned";
   $("mVideo").textContent = videoBlob ? fmtSize(videoBlob.size) : "none";
 
@@ -223,13 +223,13 @@ $("confirm").addEventListener("click", async () => {
     }
 
     $("barFill").style.width = "100%";
-    $("status").textContent = "Imported. Opening the timeline…";
+    $("status").textContent = "Imported. It is in your recordings list.";
+    // The list is the destination, not the timeline. Opening a tab here decides
+    // for the operator; they may be importing three bundles in a row and want
+    // none of them open yet.
     chrome.runtime.sendMessage({ type: "importFinished", id: localId });
 
-    setTimeout(() => {
-      chrome.tabs.create({ url: chrome.runtime.getURL(`player.html?id=${encodeURIComponent(localId)}`) });
-      window.close();
-    }, 600);
+    setTimeout(() => window.close(), 900);
   } catch (e) {
     // Quota is the realistic failure: a few imported sessions fill the bucket.
     const msg = String(e && e.name === "QuotaExceededError"

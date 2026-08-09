@@ -136,11 +136,10 @@ function loadRecordings() {
         // A recording with a video but no ticket, or one whose upload failed,
         // is unfinished business. Say so, and offer the way back in.
         const unfinished = !!(rec.video && rec.video.saved) && (!t || t.pending);
-        // Ticket number only. The _NNN that appears in the video filename
-        // counts recordings of that ticket; showing it glued on made the
-        // ticket look like "9741_002", which is not a ticket anyone can find.
+        // ticket_seq: the session identifier, same string as the video
+        // filename and the ticket link.
         const tag = t && t.ref && !t.pending
-          ? `<span class="ticket-tag">${esc(t.ref)}${t.seq > 1 ? `<span class="seq"> &middot; #${t.seq}</span>` : ""}</span>`
+          ? `<span class="ticket-tag">${esc(t.ref)}_${String(t.seq || 1).padStart(3, "0")}</span>`
           : (unfinished ? `<span class="ticket-tag pending">Not assigned</span>` : "");
         const link = t && t.uploadUrl
           ? ` &middot; <a href="${t.uploadUrl}" target="_blank" style="color:var(--link)">video link</a>` : "";
