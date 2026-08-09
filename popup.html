@@ -26,9 +26,16 @@
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
+    /* Chrome sizes the popup to its content and never shrinks it again within
+       one open. A single unbreakable string wider than 360px therefore widens
+       the whole popup permanently. Pin the width at both ends and clip. */
+    html { width: 360px; max-width: 360px; overflow-x: hidden; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       width: 360px;
+      min-width: 360px;
+      max-width: 360px;
+      overflow-x: hidden;
       background: var(--page);
       color: var(--ink);
     }
@@ -112,7 +119,7 @@
     }
     .tab-button.active { color: var(--accent); border-bottom-color: var(--accent); }
 
-    .tab-content { display: none; padding: 16px; }
+    .tab-content { display: none; padding: 16px; max-width: 100%; overflow-x: hidden; }
     .tab-content.active { display: block; }
 
     /* ---- Settings ---- */
@@ -126,16 +133,16 @@
       width: 100%; padding: 8px; border: 1px solid var(--edge2);
       background: var(--page); color: var(--ink);
       border-radius: 5px; font-family: monospace; font-size: 11px;
-      resize: vertical; line-height: 1.5;
+      resize: vertical; line-height: 1.5; max-width: 100%;
     }
-    .setting textarea { min-height: 80px; }
+    .setting textarea { min-height: 80px; max-width: 100%; }
     .setting textarea:focus, .setting input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(226,26,130,.1); }
     .setting .pair { display: flex; gap: 8px; }
     .setting .pair > * { flex: 1; min-width: 0; }
     .check { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink); margin-bottom: 14px; }
     .check input { margin: 0; }
     fieldset {
-      border: 1px solid var(--edge); border-radius: 6px; padding: 12px; margin: 0 0 14px; background: var(--surface);
+      border: 1px solid var(--edge); border-radius: 6px; padding: 12px; margin: 0 0 14px; background: var(--surface); max-width: 100%; min-width: 0;
     }
     legend {
       font-size: 11px; font-weight: 700; text-transform: uppercase;
@@ -156,8 +163,11 @@
       font-size: 11px; padding: 5px 0; border-bottom: 1px dashed var(--edge);
     }
     .fixed-row:last-of-type { margin-bottom: 12px; }
-    .fixed-row span { color: var(--ink-soft); }
-    .fixed-row code { font-size: 11px; color: var(--ink); font-family: monospace; }
+    .fixed-row span { color: var(--ink-soft); flex: none; }
+    .fixed-row code {
+      font-size: 11px; color: var(--ink); font-family: monospace;
+      min-width: 0; overflow-wrap: anywhere; text-align: right;
+    }
     .seg { display: flex; border: 1px solid var(--edge2); border-radius: 5px; overflow: hidden; }
     .seg-btn {
       flex: 1; padding: 7px; border: none; background: var(--surface2);
@@ -169,8 +179,10 @@
     .seg-btn:focus-visible { outline: 2px solid var(--link); outline-offset: -2px; }
     .shortcut-row { display: flex; align-items: center; gap: 8px; }
     kbd {
-      flex: 1; padding: 7px 10px; border: 1px solid var(--edge2); border-radius: 5px;
-      background: var(--page); color: var(--ink); font-family: monospace; font-size: 11px;
+      flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--edge2);
+      border-radius: 5px; background: var(--page); color: var(--ink);
+      font-family: monospace; font-size: 11px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     kbd.unset { color: var(--ink-faint); }
     .shortcut-edit { width: auto; margin: 0; padding: 7px 12px; flex: none; }
@@ -184,10 +196,11 @@
     .btn-primary:hover { background: var(--accent-hi); }
 
     /* ---- Recordings list ---- */
-    .recording-list { max-height: 320px; overflow-y: auto; }
+    .recording-list { max-height: 320px; overflow-y: auto; overflow-x: hidden; }
     .recording-item {
       background: var(--surface); border: 1px solid var(--edge);
       border-radius: 6px; padding: 10px; margin-bottom: 8px;
+      overflow-wrap: anywhere;
     }
     .recording-item-header {
       display: flex; justify-content: space-between;
