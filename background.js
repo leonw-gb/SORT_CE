@@ -60,8 +60,13 @@ let pendingCaptureWarning = null; // capture error to report back to the popup
 // runs after a genuine user gesture, which an offscreen document cannot supply.
 let captureWindowId = null;
 let capturePending = null;   // resolver for the in-flight startCapture()
+// Set the moment the window is put away, so any later focus attempt -- from a
+// different trigger path, or a message arriving out of order -- cannot drag it
+// back onto the screen.
+let captureMinimized = false;
 
 async function openCaptureWindow(recordingId) {
+  captureMinimized = false;
   const url = chrome.runtime.getURL(
     `capture.html?rec=${encodeURIComponent(recordingId || "")}`);
 
@@ -87,6 +92,7 @@ async function openCaptureWindow(recordingId) {
 // Minimized, never closed: the MediaRecorder lives in this window's document.
 async function minimizeCaptureWindow() {
   if (captureWindowId == null) return;
+  captureMinimized = true;
   try {
     await chrome.windows.update(captureWindowId, { state: "minimized" });
   } catch (e) { /* the operator may have closed it already */ }
@@ -96,6 +102,7 @@ async function closeCaptureWindow() {
   if (captureWindowId == null) return;
   try { await chrome.windows.remove(captureWindowId); } catch (e) {}
   captureWindowId = null;
+  captureMinimized = false;
 }
 
 // Resolves when capture.js reports the encoder started, or the operator
@@ -573,14 +580,13 @@ chrome.commands.onCommand.addListener(async (command) => {
   if (activeSession) {
     await stopSession();
   } else {
-    const res = await startSession({ trigger: "shortcut" });
-    // A refusal here has no popup to report into; startSession has already
-    // raised a notification. Do not open a capture window for a session that
-    // never started.
-    if (!res || !res.success) return;
-    // The capture window opens focused with the Share button ready; the picker
-    // still needs the operator's click.
-    focusCaptureWindow();
+    // No focusCaptureWindow() here. startSession() does not return until the
+    // encoder is running, and by then captureStarted has already minimized the
+    // window -- so focusing afterwards un-minimized it and left the picker
+    // window sitting on screen for the whole session. The window is brought
+    // forward at creation time instead, while the picker is still the thing
+    // the operator needs (see openCaptureWindow).
+    await startSession({ trigger: "shortcut" });
   }
 });
 
@@ -705,8 +711,13 @@ chrome.windows.onRemoved.addListener((id) => {
   if (id === importWindowId) importWindowId = null;
 });
 
+// Only meaningful while the picker is still waiting for a click. Once
+// captureStarted has minimized the window, raising it again would put a window
+// the operator is finished with back on top of their work -- and into the
+// recording, if they chose to capture this screen.
 async function focusCaptureWindow() {
   if (captureWindowId == null) return;
+  if (captureMinimized) return;
   try {
     await chrome.windows.update(captureWindowId, { focused: true, drawAttention: true });
   } catch (e) {}
