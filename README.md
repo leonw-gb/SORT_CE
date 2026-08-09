@@ -218,6 +218,35 @@ The name is stamped onto the session when recording starts, so a bundle says who
 made it, not who sent it on. Sessions recorded before 2.23.0 have no name and
 show as "Unknown".
 
+## v2.23.1 - Imported sessions had no video
+
+Two bugs from the 2.23.0 sharing work.
+
+**No video on an imported session.** The source-agnostic loader wired
+`getVideo` to `loadVideo` -- the render function that calls it -- instead of
+`loadVideoBlob`, the one that reads the store. The recursion threw, the catch
+turned it into "no video", and the player reported a capture failure for a file
+that was sitting in IndexedDB the whole time. Hence a bundle whose .webm played
+perfectly when unzipped by hand.
+
+Three things were hardened at the same time, because that one message was
+covering for all of them:
+
+- Imported sessions no longer trust `video.captured` from the bundle. That flag
+  describes the machine that recorded it; what matters locally is whether a blob
+  actually arrived, so the store is checked directly.
+- The video blob is materialised before it is written. `SORTZ.parse` slices the
+  video out of the zip, so the blob is a view over the File the operator picked
+  -- and that File goes away when the import window closes.
+- The write is read straight back and the size compared. A silent storage
+  failure now fails the import instead of producing a session with a dead
+  player.
+
+**Ticket showed as 9741_002.** The `_NNN` counts repeat recordings of a ticket
+and belongs to the video filename, not the ticket. Pasted into Odoo it finds
+nothing. The import preview now shows `9741 (recording 2)` and the recordings
+list shows `9741 · #2`, with the suffix omitted entirely for a first recording.
+
 ## Toolbar icon states
 
 Green dot = installed and ready. Red dot = recording. The service worker swaps

@@ -37,6 +37,14 @@ function getAll(store) {
     req.onerror = () => reject(req.error);
   }));
 }
+function getOne(store, key) {
+  return openDB().then((db) => new Promise((resolve, reject) => {
+    const tx = db.transaction(store, "readonly");
+    const req = tx.objectStore(store).get(key);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  }));
+}
 function put(store, value) {
   return openDB().then((db) => new Promise((resolve, reject) => {
     const tx = db.transaction(store, "readwrite");
@@ -117,8 +125,12 @@ async function preview(file) {
   $("mDate").textContent = fmtDate(session.startTime);
   $("mDur").textContent = fmtDur(dur);
   $("mEvents").textContent = String((session.events || []).length);
-  $("mTicket").textContent = manifest.ticket && manifest.ticket.ref
-    ? `${manifest.ticket.ref}_${String(manifest.ticket.seq || 1).padStart(3, "0")}`
+  // The ticket is the ticket. The _NNN suffix belongs to the video FILENAME --
+  // it numbers repeat recordings of the same ticket -- and printing it here
+  // read as though the ticket number were 9741_002.
+  const tk = manifest.ticket;
+  $("mTicket").textContent = tk && tk.ref
+    ? (tk.seq > 1 ? `${tk.ref} (recording ${tk.seq})` : String(tk.ref))
     : "not assigned";
   $("mVideo").textContent = videoBlob ? fmtSize(videoBlob.size) : "none";
 
@@ -155,12 +167,25 @@ $("confirm").addEventListener("click", async () => {
     const localId = `imported_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
 
     const record = Object.assign({}, session, {
+      // Rewritten from what actually arrived, not copied from the sender.
+      video: videoBlob && videoBlob.size
+        ? {
+            captured: true, saved: true,
+            size: videoBlob.size,
+            mimeType: manifest.videoMimeType || "video/webm",
+            startOffset: manifest.videoStartOffset || 0,
+            durationMs: (session.endTime || 0) - (session.startTime || 0)
+          }
+        : { captured: false, saved: false },
       id: localId,
       sourceId: manifest.sourceId || session.id || null,
       imported: true,
       importedAt: Date.now(),
       recorder: manifest.recorder || null,
       machine: manifest.machine || null,
+      // Sync offset travels in the manifest; keep it on the record so the
+      // player does not have to know the session came from a bundle.
+      videoStartOffset: manifest.videoStartOffset || 0,
       // Ticket assignment belongs to the person who recorded it. Keeping the
       // reference is useful context; keeping the upload link is not, because
       // it points at a video that the retention policy will delete.
@@ -173,13 +198,28 @@ $("confirm").addEventListener("click", async () => {
     $("barFill").style.width = "70%";
 
     if (videoBlob && videoBlob.size) {
+      // The bundle slices the video straight out of the zip, so this is a Blob
+      // view over the file the operator picked. Materialise it before storing:
+      // a view keeps the source File alive, and once the import window closes
+      // the reference goes with it.
+      const solid = new Blob([await videoBlob.arrayBuffer()], {
+        type: manifest.videoMimeType || "video/webm"
+      });
       await put(VIDEOS_STORE, {
         recordingId: localId,
-        blob: videoBlob,
+        blob: solid,
         mimeType: manifest.videoMimeType || "video/webm",
-        size: videoBlob.size,
+        size: solid.size,
         startedAt: manifest.startTime || session.startTime || null
       });
+
+      // Read it straight back. A silent write failure here is the difference
+      // between a session and a timeline with a dead player, and the operator
+      // finds out much later.
+      const check = await getOne(VIDEOS_STORE, localId);
+      if (!check || !check.blob || check.blob.size !== solid.size) {
+        throw new Error("The video did not store correctly. Try importing again.");
+      }
     }
 
     $("barFill").style.width = "100%";

@@ -64,7 +64,9 @@ const SOURCES = {
         video: rec.video || null,
         // Deferred: the timeline must render even when the video is hundreds
         // of megabytes, so the blob is only fetched when the player asks.
-        getVideo: () => loadVideo(id)
+        // loadVideoBlob, NOT loadVideo -- the latter is the render function
+        // that CALLS this one, and pointing at it made the two recurse.
+        getVideo: () => loadVideoBlob(id)
       };
     }
   }
@@ -230,7 +232,10 @@ async function loadVideo() {
   videoEl = document.getElementById("sessionVideo");
   const meta = document.getElementById("videoMeta");
   const v = recording.video || null;
-  if (!v || !v.captured) return;
+  // An imported session's video flags describe the machine that RECORDED it.
+  // What matters here is whether a blob actually arrived, so imported sessions
+  // always look in the store rather than trusting the sender's metadata.
+  if (!recording.imported && (!v || !v.captured)) return;
 
   // The video is a Blob in the videos store. Read it here rather than via the
   // service worker: a Blob cannot cross sendMessage, and the old base64
@@ -244,12 +249,17 @@ async function loadVideo() {
 
   if (!rec || !rec.blob) {
     pane.classList.add("on");
-    meta.innerHTML = `<b>No video stored</b><br>The capture did not finish saving.`;
+    // Two very different failures used to share one sentence. An imported
+    // session whose video did not survive the import is not the same thing as
+    // a capture that never finished, and the operator can act on one of them.
+    meta.innerHTML = recording.imported
+      ? `<b>No video stored</b><br>The bundle carried a video but it was not saved on import.<br>Import the .sortz again.`
+      : `<b>No video stored</b><br>The capture did not finish saving.`;
     videoEl.style.display = "none";
     return;
   }
 
-  videoOffsetMs = v.startOffset || 0;
+  videoOffsetMs = (v && v.startOffset) || recording.videoStartOffset || 0;
   // An object URL streams the Blob: the browser seeks within it without ever
   // holding the whole file in memory, which is what makes 30+ minute
   // recordings play at all.
@@ -258,11 +268,11 @@ async function loadVideo() {
   pane.classList.add("on");
   videoReady = true;
 
-  const mb = (rec.size / (1024 * 1024)).toFixed(0);
+  const mb = ((rec.size || (rec.blob && rec.blob.size) || 0) / (1024 * 1024)).toFixed(0);
   meta.innerHTML =
     `<b>Session video</b><br>${mb} MB · video only, no audio<br>` +
     `Click any timeline row to jump to that moment.` +
-    (v.endedEarly ? `<br><span style="color:#e0a33e">Sharing was stopped before the session ended.</span>` : "");
+    (v && v.endedEarly ? `<br><span style="color:#e0a33e">Sharing was stopped before the session ended.</span>` : "");
 
   // Video -> timeline: highlight the row the playhead is currently on.
   videoEl.addEventListener("timeupdate", () => {
@@ -1034,6 +1044,7 @@ async function init() {
     recorder: loaded.meta.recorder,
     imported: loaded.meta.imported,
     ticket: loaded.meta.ticket,
+    videoStartOffset: loaded.meta.videoStartOffset,
     events: loaded.events,
     tabs: loaded.tabs,
     sopSteps: loaded.sopSteps,
