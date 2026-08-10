@@ -42,13 +42,13 @@
     .chip .n { opacity: .65; font-variant-numeric: tabular-nums; margin-left: 4px; }
     .toolbar {
       padding: 10px 20px; border-bottom: 1px solid var(--line);
-      background: var(--panel); display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+      background: var(--panel); display: flex; gap: 9px; align-items: center; flex-wrap: wrap;
     }
     .toolbar input[type=search], .toolbar select {
       background: var(--bg); color: var(--txt); border: 1px solid var(--line2);
       border-radius: 6px; padding: 7px 10px; font-size: 12px;
     }
-    .toolbar input[type=search] { width: 240px; }
+    .toolbar input[type=search] { width: 190px; min-width: 120px; flex: 0 1 190px; }
     .chips { display: flex; gap: 6px; flex-wrap: wrap; }
     .chip {
       font-size: 11px; padding: 4px 9px; border-radius: 999px; cursor: pointer;
@@ -62,7 +62,6 @@
     .chip[data-k="nav"].on { background: var(--c-nav); color: #2a1c00; }
     .chip[data-k="tab"].on { background: var(--c-tab); color: #06283a; }
     .chip[data-k="net"].on { background: var(--c-net); color: #10151c; }
-    .chip[data-k="ws"].on { background: var(--c-net); color: #10151c; }
     .chip[data-k="misc"].on { background: #5b6472; color: #fff; }
     .spacer { flex: 1; }
     .btn {

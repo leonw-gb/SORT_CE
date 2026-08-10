@@ -476,8 +476,10 @@ const CHIP_GROUPS = [
   { k: "key", label: "Keys", kinds: ["key"] },
   { k: "nav", label: "Navigation", kinds: ["nav"] },
   { k: "tab", label: "Tabs", kinds: ["tab"] },
-  { k: "net", label: "Network", kinds: ["net", "scroll", "visibility"] },
-  { k: "ws", label: "WebSocket", kinds: ["ws"] },
+  // WebSocket frames ride along with Network. They are the same question --
+  // "what did the page talk to?" -- and two chips for it cost more header room
+  // than the distinction is worth. Capture is unchanged; only the filter merged.
+  { k: "net", label: "Network", kinds: ["net", "ws", "scroll", "visibility"] },
   { k: "misc", label: "Other", kinds: ["misc"] }
 ];
 
@@ -880,6 +882,10 @@ const collapsedLanes = new Set();
 function passesFilters(ev) {
   const kind = kindOf(ev);
   // Chip filter (grouped)
+  // SOP steps and notes are structure, not a filterable event type: they have
+  // no chip, and grouping them under "Other" meant switching Other off erased
+  // the step headers the whole timeline is organised by.
+  if (kind === "sop" || kind === "note") return true;
   const group = CHIP_GROUPS.find((g) => g.kinds.includes(kind));
   if (group && hiddenKinds.has(group.k)) return false;
   if (!group && hiddenKinds.has("misc")) return false;

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SORT - Session Observer Recorder Tracker",
-  "version": "2.24.0",
+  "version": "2.24.1",
   "description": "Record expert problem-solving across multiple tabs on one correlated timeline: clicks, inputs, navigation, WebSocket actions, SOP step tagging, plus whole-screen video. Assigns each recording to an Odoo ticket and uploads it.",
   "permissions": [
     "tabs",
