@@ -7,8 +7,11 @@ const RECORDINGS_DB = "MultiTabRecorder";
 const RECORDINGS_STORE = "recordings";
 const VIDEOS_STORE = "videos";
 
-// Events below this bar are considered low-signal and start HIDDEN.
-const DEFAULT_HIDDEN = new Set(["net", "ws", "scroll", "visibility"]);
+// The chip groups a session opens with. Everything else starts hidden.
+// Stated as what you WANT rather than what to suppress: the useful default is
+// the operator's own actions, and Navigation/Network/WebSocket/Other are
+// context you go looking for, not context you read past every time.
+const DEFAULT_VISIBLE = new Set(["click", "input", "key", "tab"]);
 // A pause longer than this (ms) gets a divider; longer than LONG_MS = highlighted.
 const PAUSE_MS = 3000;
 const LONG_MS = 10000;
@@ -75,6 +78,39 @@ const SOURCES = {
 function sourceFor() {
   const p = new URLSearchParams(location.search);
   return { name: p.get("src") || "local", id: p.get("id") };
+}
+
+// ---- time display ------------------------------------------------------------
+// "elapsed" counts from the start of the session, which is what you want when
+// reading the timeline against the video. "clock" shows wall-clock time, which
+// is what you want when matching the session against a ticket comment, a log
+// line, or a phone call. Both are the same instant.
+let timeMode = "elapsed";
+
+function loadTimeMode() {
+  try {
+    const v = localStorage.getItem("sortTimeMode");
+    if (v === "clock" || v === "elapsed") timeMode = v;
+  } catch (e) { /* storage can be blocked; the default is fine */ }
+}
+function saveTimeMode() {
+  try { localStorage.setItem("sortTimeMode", timeMode); } catch (e) {}
+}
+
+// Wall-clock time of an event, from the session start plus its offset.
+function fmtWall(ms) {
+  const start = (recording && recording.startTime) || 0;
+  if (!start) return fmtClock(ms);       // pre-2.18 sessions have no start time
+  const d = new Date(start + (ms || 0));
+  return `${String(d.getHours()).padStart(2, "0")}:` +
+         `${String(d.getMinutes()).padStart(2, "0")}:` +
+         `${String(d.getSeconds()).padStart(2, "0")}`;
+}
+
+// Every timestamp in the timeline goes through here, so the toggle moves all of
+// them at once -- rows, tab lanes and the copied log.
+function fmtTime(ms) {
+  return timeMode === "clock" ? fmtWall(ms) : fmtClock(ms);
 }
 
 // ---- formatting --------------------------------------------------------------
@@ -952,7 +988,7 @@ function renderTabLanes(log, visible) {
       `<span class="caret">\u25BC</span>` +
       `<span class="swatch"></span>` +
       `<span class="name">${esc(tabName(lane.tabId))}</span>` +
-      `<span class="when">${fmtClock(first.relativeTime || 0)}` +
+      `<span class="when">${fmtTime(first.relativeTime || 0)}` +
       (span >= 1000 ? ` \u00B7 ${fmtDur(span)}` : "") + `</span>` +
       `<span class="count">${lane.items.length} event${lane.items.length === 1 ? "" : "s"}</span>`;
     const toggle = () => {
@@ -1033,7 +1069,7 @@ function rowEl(ev) {
   const tabPill = (ev.tabId != null && Object.keys(recording.tabs || {}).length > 1)
     ? `<span class="tab-pill">${esc(tabName(ev.tabId))}</span>` : "";
   row.innerHTML =
-    `<span class="t">${fmtClock(ev.relativeTime || 0)}</span>` +
+    `<span class="t">${fmtTime(ev.relativeTime || 0)}</span>` +
     `<span class="ico ${kind}">${ICON[kind] || "\u2022"}</span>` +
     `<span class="body"><span class="lead">${dsc.lead}${tabPill}</span>` +
     (dsc.sub ? `<span class="sub">${esc(dsc.sub)}</span>` : "") +
@@ -1112,7 +1148,7 @@ function buildCopyText() {
     const dsc = describe(ev);
     const plain = (dsc.lead + (dsc.sub ? ` — ${dsc.sub}` : ""))
       .replace(/<[^>]+>/g, "");
-    lines.push(`[${fmtClock(ev.relativeTime || 0)}] ${plain}`);
+    lines.push(`[${fmtTime(ev.relativeTime || 0)}] ${plain}`);
     if (dsc.dbg) lines.push(`    [why] ${dsc.dbg}`);
   });
   return lines.join("\n");
@@ -1120,6 +1156,7 @@ function buildCopyText() {
 
 // ---- init --------------------------------------------------------------------
 async function init() {
+  loadTimeMode();
   const { name: srcName, id } = sourceFor();
   const log = document.getElementById("log");
   if (!id) { log.innerHTML = `<div id="empty">No recording id in the URL.</div>`; return; }
@@ -1164,10 +1201,8 @@ async function init() {
   // Resolve every Flutter click to its semantics node id + ground-truth label.
   resolveFlutterClicks(events);
 
-  DEFAULT_HIDDEN.forEach((k) => {
-    // map raw kinds to chip groups
-    const g = CHIP_GROUPS.find((grp) => grp.kinds.includes(k));
-    if (g) hiddenKinds.add(g.k);
+  CHIP_GROUPS.forEach((g) => {
+    if (!DEFAULT_VISIBLE.has(g.k)) hiddenKinds.add(g.k);
   });
 
   renderStats();
@@ -1187,6 +1222,21 @@ async function init() {
     foldBtn.classList.toggle("active", foldTabs);
     render();
   });
+  const timeBtn = document.getElementById("timeToggle");
+  const paintTimeBtn = () => {
+    timeBtn.textContent = timeMode === "clock" ? "Time: clock" : "Time: elapsed";
+    timeBtn.classList.toggle("active", timeMode === "clock");
+  };
+  paintTimeBtn();
+  timeBtn.addEventListener("click", () => {
+    timeMode = timeMode === "clock" ? "elapsed" : "clock";
+    saveTimeMode();
+    paintTimeBtn();
+    // Re-rendering rebuilds every timestamp; the row the video is on is
+    // re-highlighted by the next timeupdate, so nothing is lost.
+    render();
+  });
+
   const dbgBtn = document.getElementById("debugToggle");
   dbgBtn.addEventListener("click", () => {
     debugMode = !debugMode;

@@ -89,7 +89,7 @@
     .step-body { padding: 0 20px; }
     .step-group.collapsed .step-body { display: none; }
     .row {
-      display: grid; grid-template-columns: 62px 22px 1fr auto;
+      display: grid; grid-template-columns: 68px 22px 1fr auto;
       align-items: baseline; gap: 10px;
       padding: 5px 10px; border-radius: 6px;
       border-left: 3px solid transparent; position: relative;
@@ -211,6 +211,7 @@
     <span class="spacer"></span>
     <select id="tabFilter"><option value="">All tabs</option></select>
     <button class="btn" id="foldTabs" title="Collapse every tab lane to a single line: which tab was active, and when it was switched to">Fold to tabs</button>
+    <button class="btn" id="timeToggle" title="Switch every timestamp between time elapsed since the session started and the clock time it happened">Time: elapsed</button>
     <button class="btn" id="copyLog">Copy log</button>
     <button class="btn" id="debugToggle" title="Show technical node ids (flt-semantic-node-N) on every resolved click">Debug: off</button>
   </div>
