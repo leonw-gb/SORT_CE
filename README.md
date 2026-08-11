@@ -429,3 +429,42 @@ Three consecutive failures and the poll backs off geometrically to a 60s
 ceiling, logging once rather than every two seconds. It recovers to the normal
 interval on the first success. A request that outlives its own interval is
 aborted.
+
+## v2.25.1 - Both clocks, real .sortz files, and the session is what uploads
+
+### Every timestamp shows both readings
+The elapsed/clock toggle is gone. Each row now carries the wall-clock time with
+the elapsed time under it (`14:33:05` / `+01:05.0`). The toggle made you choose
+in advance which question you were going to ask, and the answer was routinely
+the other one -- clock matches a ticket comment, a server log or a phone record,
+elapsed matches the video scrubber. Showing both costs one line per row and
+removes the decision. Sessions recorded before 2.18 have no start time and show
+elapsed alone rather than an empty line.
+
+### Exports are actually named .sortz
+`filenameFor()` always produced a `.sortz` name, but the bundle Blob was typed
+`application/zip` -- and `chrome.downloads` trusts the MIME type over the
+filename, so it silently "corrected" every export to `.zip`. The bundle is now
+typed `application/octet-stream`. It is still a plain ZIP inside; the extension
+is what tells an operator, and the import dialog, that it is a session.
+
+### The upload is the session, not the video
+The upload server now hosts the timeline player and accepts bundles (limit
+raised to 10 GB), so SORT sends the `.sortz` instead of the bare `.webm`. A
+loose video is only the pixels: no event stream, no tab lanes, no SOP steps,
+nothing saying who recorded it.
+
+* The local copy saved before uploading is also the bundle, named
+  `<ticket>_<seq>.sortz`.
+* It is built once and reused for both, because hashing several hundred
+  megabytes twice costs minutes.
+* Recordings with **no video** are no longer refused. The timeline alone is
+  worth keeping and is often the half a ticket is read for.
+* The ticket link heading is now `Session Recording`. Repeat uploads still
+  append under one heading, and tickets carrying the old `Video Recording`
+  heading keep it rather than being rewritten.
+
+### Call trigger
+Removed the open question about the `Mission Control` shared accounts in the
+hotline roster: they are a leftover and are no longer logged into the hotline,
+so no call can be answered under a name that belongs to nobody.

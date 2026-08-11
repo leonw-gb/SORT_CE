@@ -5,6 +5,7 @@
 // hundred megabytes outlives any service worker.
 
 const RECORDINGS_DB = "MultiTabRecorder";
+const RECORDINGS_STORE = "recordings";
 const VIDEOS_STORE = "videos";
 
 const recId = new URLSearchParams(location.search).get("rec") || "";
@@ -130,12 +131,52 @@ function setBusy(on) {
   });
 }
 
+// The .sortz bundle for this recording: timeline, metadata and video in one
+// file. Built once and reused for both the local copy and the upload -- a
+// session video is hundreds of megabytes and hashing it twice is minutes.
+let bundleBlob = null;
+
+async function buildBundle() {
+  if (bundleBlob) return bundleBlob;
+  const manifest = {
+    formatVersion: SORTZ.FORMAT_VERSION,
+    producedBy: "SORT",
+    producedAt: Date.now(),
+    sourceId: recording.id,
+    // Stamped from what the session was recorded WITH, never from whoever is
+    // uploading it.
+    recorder: recording.recorder || null,
+    machine: recording.machine || null,
+    startTime: recording.startTime || null,
+    endTime: recording.endTime || null,
+    videoStartOffset: (recording.video && recording.video.startOffset) || 0,
+    videoMimeType: (recording.video && recording.video.mimeType) || "video/webm",
+    hasVideo: !!videoBlob,
+    eventCount: (recording.events || []).length,
+    ticket: recording.ticket ? { ref: recording.ticket.ref, seq: recording.ticket.seq } : null
+  };
+  setStatus("Packing the session\u2026");
+  bundleBlob = await SORTZ.build({
+    manifest,
+    session: recording,
+    videoBlob,
+    onProgress: (loaded, total) => { if (total) setProgress(loaded, total); }
+  });
+  barEl.classList.remove("on");
+  return bundleBlob;
+}
+
 // Local copy first, always: an upload can fail, a file on disk cannot.
+//
+// The saved file is the .sortz bundle, not the bare .webm. A loose video is
+// only the pixels: no timeline, no tab lanes, no SOP steps, and nothing saying
+// who recorded it. The bundle is the durable copy of a session.
 async function saveToDisk(ref, seq) {
-  const name = `${ref}_${String(seq).padStart(3, "0")}.webm`;
+  const name = `${ref}_${String(seq).padStart(3, "0")}.sortz`;
   const root = (cfg.downloadFolder || "Recordings").replace(/^\/+|\/+$/g, "");
   const path = ref ? `${root}/${ref}/${name}` : `${root}/${name}`;
-  const url = URL.createObjectURL(videoBlob);
+  const blob = await buildBundle();
+  const url = URL.createObjectURL(blob);
   try {
     await ask({ type: "downloadVideo", url, filename: path });
   } finally {
@@ -155,8 +196,12 @@ async function run(action) {
     setStatus("Choose the ticket from the list. A typed number alone cannot be written back to Odoo.", "err");
     return;
   }
-  if (!videoBlob) {
-    setStatus("This recording has no video, so there is nothing to save or upload.", "err");
+  // No video is no longer a dead end: the bundle still carries the timeline,
+  // the tab lanes and the SOP steps, which is the half of a session that a
+  // ticket is usually read for. Only a recording that vanished from storage
+  // has nothing to offer.
+  if (!recording) {
+    setStatus("This recording is no longer stored, so there is nothing to save or upload.", "err");
     return;
   }
 
@@ -177,7 +222,7 @@ async function run(action) {
       setStatus(`Uploading ${name}…`);
       const up = await uploadVideo({
         baseUrl: cfg.upload.url,
-        blob: videoBlob,
+        blob: await buildBundle(),
         filename: name,
         onProgress: setProgress
       });
@@ -262,7 +307,7 @@ window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !busy) win
     ? Math.round((recording.endTime - recording.startTime) / 1000) : 0;
   $("recMeta").innerHTML =
     `<b>${Math.floor(dur / 60)}:${String(dur % 60).padStart(2, "0")}</b> long · ` +
-    (videoBlob ? `<b>${mb(videoBlob.size)}</b> MB video · ` : `<span style="color:var(--warn)">no video</span> · `) +
+    (videoBlob ? `<b>${mb(videoBlob.size)}</b> MB video · ` : `<span style="color:var(--warn)">no video, timeline only</span> · `) +
     `<b>${recording ? recording.events.length : 0}</b> actions`;
 
   await loadTickets();

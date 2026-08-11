@@ -166,7 +166,11 @@ const SORTZ = (() => {
       u16(central.length), u16(central.length),
       u32(cd.length), u32(offset), u16(0)
     ]);
-    return new Blob([...parts, cd, end], { type: "application/zip" });
+    // NOT "application/zip": chrome.downloads trusts the blob's MIME type over
+    // the filename and silently rewrites "….sortz" to "….zip" to match it. The
+    // bundle IS a zip, but the extension is what tells an operator (and the
+    // import dialog) that it is a session, so the type has to stay neutral.
+    return new Blob([...parts, cd, end], { type: "application/octet-stream" });
   }
 
   // ---- reading -----------------------------------------------------------------

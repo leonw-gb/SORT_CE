@@ -79,6 +79,11 @@ const Odoo = (() => {
 
     // Add the recording link to the TOP of the ticket description, matching
     // what the desktop tool wrote so old and new entries read the same.
+    // The link points at a hosted SESSION (timeline + video) since 2.25.1, not
+    // a bare video file. The heading in the ticket says "Session Recording"
+    // for new entries; existing tickets keep whatever heading they already
+    // have, because rewriting old ticket descriptions to match is not worth
+    // touching every record for.
     async addRecordingLink(ticketId, videoUrl, filename, model = "helpdesk.ticket") {
       const read = await this.call(model, "read", [[ticketId]], { fields: ["description"] });
       if (!read || !read.length) throw new Error("Ticket not found");
@@ -87,13 +92,16 @@ const Odoo = (() => {
       const RULE = "=======================";
 
       let next;
-      if (desc.includes("Video Recording") && desc.includes(RULE)) {
+      if ((desc.includes("Video Recording") || desc.includes("Session Recording")) && desc.includes(RULE)) {
         if (desc.includes("Video Recording:") && !desc.includes("Video Recordings:")) {
           desc = desc.replace("Video Recording: <a", "Video Recordings:<br/>\n<a");
         }
+        if (desc.includes("Session Recording:") && !desc.includes("Session Recordings:")) {
+          desc = desc.replace("Session Recording: <a", "Session Recordings:<br/>\n<a");
+        }
         next = desc.replace(`${RULE}</p>`, `${link}${RULE}</p>`);
       } else {
-        next = `<p>${RULE}<br/>\nVideo Recording: ${link}${RULE}</p>` + desc;
+        next = `<p>${RULE}<br/>\nSession Recording: ${link}${RULE}</p>` + desc;
       }
 
       await this.call(model, "write", [[ticketId], { description: next }]);

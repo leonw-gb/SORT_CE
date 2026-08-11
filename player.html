@@ -88,17 +88,27 @@
     .step-body { padding: 0 20px; }
     .step-group.collapsed .step-body { display: none; }
     .row {
-      display: grid; grid-template-columns: 68px 22px 1fr auto;
-      align-items: baseline; gap: 10px;
+      display: grid; grid-template-columns: 74px 22px 1fr auto;
+      align-items: start; gap: 10px;
       padding: 5px 10px; border-radius: 6px;
       border-left: 3px solid transparent; position: relative;
     }
     .row:hover { background: var(--panel2); }
-    .row .t { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
+    /* Two readings stacked: wall clock leads, elapsed sits under it in a
+       dimmer, smaller face so the column still scans as one number. */
+    .row .t {
+      color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums;
+      text-align: right; display: flex; flex-direction: column; line-height: 1.25;
+    }
+    .row .t .abs { color: var(--muted); }
+    .row .t .rel { font-size: 10px; opacity: .7; }
     .row .ico {
       font-size: 11px; line-height: 1; text-align: center;
       width: 20px; height: 20px; border-radius: 5px; color: #fff; font-weight: 700;
       display: inline-flex; align-items: center; justify-content: center;
+      /* The grid aligns to the top of a now two-line time cell; drop the badge
+         onto the first text line rather than the cell's top edge. */
+      margin-top: -2px;
     }
     .ico.click { background: var(--c-click); }
     .ico.input { background: var(--c-input); }
@@ -210,7 +220,6 @@
     <span class="spacer"></span>
     <select id="tabFilter"><option value="">All tabs</option></select>
     <button class="btn" id="foldTabs" title="Collapse every tab lane to a single line: which tab was active, and when it was switched to">Fold to tabs</button>
-    <button class="btn" id="timeToggle" title="Switch every timestamp between time elapsed since the session started and the clock time it happened">Time: elapsed</button>
     <button class="btn" id="copyLog">Copy log</button>
     <button class="btn" id="debugToggle" title="Show technical node ids (flt-semantic-node-N) on every resolved click">Debug: off</button>
   </div>

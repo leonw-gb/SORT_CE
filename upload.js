@@ -1,16 +1,20 @@
-// upload.js - Video upload to the recording server.
+// upload.js - Session upload to the recording server.
 //
-// Same contract the desktop tool used:
 //   POST {base}/api/upload   multipart/form-data, field "file"
-//   200/201 -> JSON with watch_url (preferred) or raw_url
+//   200/201 -> JSON with session_url (preferred), else watch_url / raw_url
+//
+// What travels is the .sortz BUNDLE, not the bare .webm. The server hosts the
+// same timeline player the extension does, so uploading only the video would
+// throw away the half of a session that explains it -- the event stream, the
+// tab lanes, the SOP steps and who recorded it.
 //
 // The server does not authenticate uploads -- it is reachable only on the
 // internal network -- so there is no key to send.
 //
-// XMLHttpRequest rather than fetch: it reports upload progress, and a session
-// video is hundreds of megabytes over the office network. This runs in the
-// ticket window, never the service worker -- the worker can be torn down
-// mid-upload, an open window cannot.
+// XMLHttpRequest rather than fetch: it reports upload progress, and a bundle is
+// hundreds of megabytes over the office network. This runs in the ticket
+// window, never the service worker -- the worker can be torn down mid-upload,
+// an open window cannot.
 
 function uploadVideo({ baseUrl, blob, filename, onProgress }) {
   return new Promise((resolve, reject) => {
@@ -39,6 +43,9 @@ function uploadVideo({ baseUrl, blob, filename, onProgress }) {
       // video). watch_url/raw_url are the video-only fallbacks it returns
       // today. Returning the shape rather than a bare string lets the caller
       // label the link correctly without sniffing the URL.
+      // session_url is what the server returns for a bundle it could unpack:
+      // a page with the timeline AND the video. watch_url/raw_url remain the
+      // video-only answers, so an older server keeps working unchanged.
       const sessionUrl = data.session_url || "";
       const link = sessionUrl || data.watch_url || data.raw_url || "";
       if (!link) { reject(new Error("The upload finished but the server returned no link")); return; }

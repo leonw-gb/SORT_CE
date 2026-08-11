@@ -81,36 +81,41 @@ function sourceFor() {
 }
 
 // ---- time display ------------------------------------------------------------
-// "elapsed" counts from the start of the session, which is what you want when
-// reading the timeline against the video. "clock" shows wall-clock time, which
-// is what you want when matching the session against a ticket comment, a log
-// line, or a phone call. Both are the same instant.
-let timeMode = "elapsed";
-
-function loadTimeMode() {
-  try {
-    const v = localStorage.getItem("sortTimeMode");
-    if (v === "clock" || v === "elapsed") timeMode = v;
-  } catch (e) { /* storage can be blocked; the default is fine */ }
-}
-function saveTimeMode() {
-  try { localStorage.setItem("sortTimeMode", timeMode); } catch (e) {}
-}
+// Both readings, always, one above the other. They answer different questions
+// and you need whichever one the thing you are comparing against happens to
+// use: wall-clock matches a ticket comment, a server log or a phone record;
+// elapsed matches the video scrubber. A toggle made you choose in advance,
+// which meant guessing wrong and going back for the other one. Showing both
+// costs one line of vertical space per row and removes the decision.
+//
+// Wall clock leads because it is the coarser, more recognisable number.
 
 // Wall-clock time of an event, from the session start plus its offset.
 function fmtWall(ms) {
   const start = (recording && recording.startTime) || 0;
-  if (!start) return fmtClock(ms);       // pre-2.18 sessions have no start time
+  if (!start) return "";                 // pre-2.18 sessions have no start time
   const d = new Date(start + (ms || 0));
   return `${String(d.getHours()).padStart(2, "0")}:` +
          `${String(d.getMinutes()).padStart(2, "0")}:` +
          `${String(d.getSeconds()).padStart(2, "0")}`;
 }
 
-// Every timestamp in the timeline goes through here, so the toggle moves all of
-// them at once -- rows, tab lanes and the copied log.
+// The stacked timestamp used by every row and lane head. Falls back to elapsed
+// alone on old sessions that never recorded a start time, rather than printing
+// an empty line where the clock should be.
+function timeCellHTML(ms) {
+  const wall = fmtWall(ms);
+  const rel = fmtClock(ms);
+  if (!wall) return `<span class="t"><span class="abs">${rel}</span></span>`;
+  return `<span class="t"><span class="abs">${wall}</span>` +
+         `<span class="rel">+${rel}</span></span>`;
+}
+
+// Plain-text form for the copied log, where a stack is not available.
 function fmtTime(ms) {
-  return timeMode === "clock" ? fmtWall(ms) : fmtClock(ms);
+  const wall = fmtWall(ms);
+  const rel = fmtClock(ms);
+  return wall ? `${wall} +${rel}` : rel;
 }
 
 // ---- formatting --------------------------------------------------------------
@@ -994,7 +999,8 @@ function renderTabLanes(log, visible) {
       `<span class="caret">\u25BC</span>` +
       `<span class="swatch"></span>` +
       `<span class="name">${esc(tabName(lane.tabId))}</span>` +
-      `<span class="when">${fmtTime(first.relativeTime || 0)}` +
+      `<span class="when">${fmtWall(first.relativeTime || 0) || fmtClock(first.relativeTime || 0)}` +
+      (fmtWall(first.relativeTime || 0) ? ` \u00B7 +${fmtClock(first.relativeTime || 0)}` : "") +
       (span >= 1000 ? ` \u00B7 ${fmtDur(span)}` : "") + `</span>` +
       `<span class="count">${lane.items.length} event${lane.items.length === 1 ? "" : "s"}</span>`;
     const toggle = () => {
@@ -1075,7 +1081,7 @@ function rowEl(ev) {
   const tabPill = (ev.tabId != null && Object.keys(recording.tabs || {}).length > 1)
     ? `<span class="tab-pill">${esc(tabName(ev.tabId))}</span>` : "";
   row.innerHTML =
-    `<span class="t">${fmtTime(ev.relativeTime || 0)}</span>` +
+    `${timeCellHTML(ev.relativeTime || 0)}` +
     `<span class="ico ${kind}">${ICON[kind] || "\u2022"}</span>` +
     `<span class="body"><span class="lead">${dsc.lead}${tabPill}</span>` +
     (dsc.sub ? `<span class="sub">${esc(dsc.sub)}</span>` : "") +
@@ -1162,7 +1168,6 @@ function buildCopyText() {
 
 // ---- init --------------------------------------------------------------------
 async function init() {
-  loadTimeMode();
   const { name: srcName, id } = sourceFor();
   const log = document.getElementById("log");
   if (!id) { log.innerHTML = `<div id="empty">No recording id in the URL.</div>`; return; }
@@ -1226,20 +1231,6 @@ async function init() {
     collapsedLanes.clear();
     foldBtn.textContent = foldTabs ? "Unfold tabs" : "Fold to tabs";
     foldBtn.classList.toggle("active", foldTabs);
-    render();
-  });
-  const timeBtn = document.getElementById("timeToggle");
-  const paintTimeBtn = () => {
-    timeBtn.textContent = timeMode === "clock" ? "Time: clock" : "Time: elapsed";
-    timeBtn.classList.toggle("active", timeMode === "clock");
-  };
-  paintTimeBtn();
-  timeBtn.addEventListener("click", () => {
-    timeMode = timeMode === "clock" ? "elapsed" : "clock";
-    saveTimeMode();
-    paintTimeBtn();
-    // Re-rendering rebuilds every timestamp; the row the video is on is
-    // re-highlighted by the next timeupdate, so nothing is lost.
     render();
   });
 
