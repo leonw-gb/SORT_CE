@@ -19,7 +19,12 @@ const FIXED = {
     limit: 50
   },
   // The "still recording?" reminder is always on, every 5 minutes.
-  continueMinutes: 5
+  continueMinutes: 5,
+  // Call trigger polling floor. Faster than this buys nothing -- the delay is
+  // dominated by Sipgate's push and n8n's hop -- and costs a request per second
+  // per operator against the same small endpoint.
+  callPollMinMs: 1000,
+  callPollDefaultMs: 2000
 };
 
 // Merge the stored config with the fixed values. The fixed values always win,
@@ -31,6 +36,9 @@ function withFixedSettings(config) {
     theme: c.theme === "light" ? "light" : "dark",
     downloadFolder: c.downloadFolder || "Recordings",
     upload: { url: FIXED.upload.url },
+    // The endpoint is the colleague's to host, so unlike the upload server and
+    // Odoo it is NOT fixed here: the URL and key are settings.
+    callTrigger: Object.assign({ url: "", apiKey: "", intervalMs: FIXED.callPollDefaultMs }, c.callTrigger),
     odoo: Object.assign({}, c.odoo, {
       url: FIXED.odoo.url,
       db: FIXED.odoo.db,

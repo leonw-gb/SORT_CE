@@ -4,6 +4,8 @@
 
 // Fixed deployment values (upload host, Odoo host/db/model, reminder interval).
 importScripts("defaults.js");
+// Shared with the offscreen poller: one copy of the "is this call mine" rule.
+importScripts("callmatch.js");
 
 const RECORDINGS_DB = "MultiTabRecorder";
 const RECORDINGS_STORE = "recordings";
@@ -414,6 +416,9 @@ async function stopSession(options) {
   // assignment, download and upload all happen afterwards against the stored
   // session, so closing the dialog -- or a failed upload -- never loses a video.
   activeSession.ticket = null;
+  // Whatever ends the session ends our interest in its call: without this a
+  // late hangup would prompt against the NEXT recording.
+  followedCallId = null;
   const hadVideo = !!(activeSession.video && activeSession.video.saved);
   await saveRecording(activeSession);
   activeSession = null;
@@ -508,10 +513,14 @@ async function closeContinueWindow() {
   continueWindowId = null;
 }
 
-async function openContinueWindow(minutes) {
+// `reason` changes only the wording: "the call ended" is a different question
+// from "you have been recording a while", and answering the wrong one is how an
+// operator ends up stopping a recording they meant to keep.
+async function openContinueWindow(minutes, reason) {
   if (!activeSession) return;
   await closeContinueWindow();
-  const url = chrome.runtime.getURL(`continue.html?min=${minutes}`);
+  const url = chrome.runtime.getURL(
+    `continue.html?min=${minutes}&why=${encodeURIComponent(reason || "timer")}`);
   const W = 460, H = 220;
   let left, top;
   try {
@@ -526,9 +535,10 @@ async function openContinueWindow(minutes) {
 }
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === POLL_KEEPALIVE_ALARM) { ensureCallPollerAlive(); return; }
   if (alarm.name !== CONTINUE_ALARM) return;
   if (!activeSession) return;
-  openContinueWindow(FIXED.continueMinutes);
+  openContinueWindow(FIXED.continueMinutes, "timer");
   // Re-arm: if the operator ignores the window entirely we still ask again
   // rather than going quiet for the rest of the session.
   armContinueAlarm();
@@ -724,18 +734,168 @@ async function focusCaptureWindow() {
 }
 
 // ---- Message handler ---------------------------------------------------------
+// ---- Call trigger ------------------------------------------------------------
+// Sipgate pushes reach n8n, n8n keeps the live-call state, and SORT polls it.
+// The extension has no public URL, so it cannot be pushed to -- and polling is
+// the better fit anyway: it is self-healing. A missed event is invisible two
+// seconds later, whereas a missed push is a recording that never started.
+//
+// What the payloads actually look like on our hotline (verified against real
+// n8n executions):
+//
+//   inbound newCall  user: [16 agents]   the group is ringing, nobody has it
+//   inbound answer   user: "Rahel Mueller"   <- the only event that assigns
+//   outbound newCall user: "Christoph Armschat"
+//   hangup           no user at all, only callId
+//
+// Hence: recording starts on a SCALAR user matching the configured name, and
+// stops by matching the callId we are following. Ringing never starts anything;
+// on a busy hotline that would open a picker on sixteen machines at once.
+
+// The call we started this session for, so a hangup for a DIFFERENT call
+// (a colleague's, or one we joined mid-way) cannot end our recording.
+let followedCallId = null;
+
+// A hangup asks rather than stops: the operator is usually still writing up
+// what just happened, and killing the recording at the moment the customer
+// hangs up would cut off the part that explains the fix.
+async function handleCallEnded(callId) {
+  if (!activeSession) { followedCallId = null; return; }
+  if (followedCallId && callId && callId !== followedCallId) return;
+  followedCallId = null;
+  // Same prompt as the five-minute reminder, so there is one way to end a
+  // recording rather than two that behave slightly differently.
+  await armContinueAlarm();
+  openContinueWindow(FIXED.continueMinutes, "call");
+}
+
+async function handleCallStarted(call) {
+  const res = await startSession({
+    trigger: "call",
+    call: {
+      id: call.callId,
+      direction: call.direction,
+      from: call.from,
+      to: call.to,
+      startedAt: call.at || Date.now()
+    }
+  });
+  // Follow this call whether it opened a session or joined the running one:
+  // either way its hangup is the one that concerns us.
+  if (res && res.success) followedCallId = call.callId;
+  return res;
+}
+
+// Push the current settings at the poller. Called on install, on startup, and
+// whenever settings are saved, so a changed name or URL takes effect at once.
+async function syncCallPoller() {
+  const config = await getConfig();
+  const enabled = !!(config.callTrigger && config.callTrigger.url && (config.sipgateName || "").trim());
+  try {
+    await ensureOffscreen();
+  } catch (e) {
+    return { polling: false, error: "The background worker could not be started." };
+  }
+  if (!enabled) {
+    chrome.runtime.sendMessage({ target: "callpoll", type: "stop" }).catch(() => {});
+    return { polling: false };
+  }
+  chrome.runtime.sendMessage({
+    target: "callpoll",
+    type: "configure",
+    config: {
+      url: config.callTrigger.url,
+      apiKey: config.callTrigger.apiKey || "",
+      name: (config.sipgateName || "").trim(),
+      intervalMs: Math.max(1000, Number(config.callTrigger.intervalMs) || 2000)
+    }
+  }).catch(() => {});
+  return { polling: true };
+}
+
+// The offscreen document can be closed by Chrome under memory pressure, and a
+// worker that was woken by some unrelated event never ran onStartup. A slow
+// heartbeat re-creates the document and re-arms the poller, so call recording
+// cannot quietly stop working until the next browser restart. One minute is the
+// fastest chrome.alarms allows and is plenty: this only repairs, it never
+// detects.
+const POLL_KEEPALIVE_ALARM = "callPollKeepalive";
+
+async function ensureCallPollerAlive() {
+  const config = await getConfig();
+  if (!(config.callTrigger && config.callTrigger.url && (config.sipgateName || "").trim())) return;
+  let alive = false;
+  try {
+    const res = await chrome.runtime.sendMessage({ target: "callpoll", type: "status" });
+    alive = !!(res && res.polling);
+  } catch (e) { /* no offscreen document listening */ }
+  if (!alive) await syncCallPoller();
+}
+
+chrome.runtime.onStartup.addListener(() => {
+  chrome.alarms.create(POLL_KEEPALIVE_ALARM, { periodInMinutes: 1 });
+  syncCallPoller();
+});
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.alarms.create(POLL_KEEPALIVE_ALARM, { periodInMinutes: 1 });
+  syncCallPoller();
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Messages addressed to another context (the offscreen document, the capture
+  // window) travel through every listener in the extension. Ignore them here or
+  // an unhandled type in this switch answers on their behalf.
+  if (message && message.target && message.target !== "worker") return false;
   switch (message.type) {
 
     case "startSession":
       startSession(message.options).then(sendResponse);
       return true;
 
-    // Entry point for the future Sipgate/n8n trigger. Starts a recording, or
-    // attaches the call to the one already running. Nothing calls it yet.
+    // Entry point for the Sipgate/n8n trigger. Starts a recording, or attaches
+    // the call to the one already running.
     case "callStarted":
-      startSession({ trigger: "call", call: message.call })
-        .then(sendResponse);
+      handleCallStarted(message.call || {}).then(sendResponse);
+      return true;
+
+    // ---- from the offscreen poller ----
+    // Only fires on a CHANGE, so this is "I just answered", not "still on a
+    // call". The poller has already checked the name.
+    case "callStateStarted":
+      handleCallStarted(message.call || {}).then(() => sendResponse({ success: true }));
+      return true;
+
+    case "callStateEnded":
+      handleCallEnded(message.callId || null).then(() => sendResponse({ success: true }));
+      return true;
+
+    // First poll after a reload: a call may already be running. Follow it so
+    // its hangup still prompts, but do not open a picker for a call the
+    // operator answered minutes ago.
+    case "callStateAdopted":
+      if (message.call && activeSession) followedCallId = message.call.callId;
+      sendResponse({ success: true });
+      return false;
+
+    case "callPollError":
+      console.warn("SORT: call-state endpoint unreachable:", message.error);
+      sendResponse({ success: true });
+      return false;
+
+    case "syncCallPoller":
+      syncCallPoller().then(sendResponse);
+      return true;
+
+    case "probeCallEndpoint":
+      (async () => {
+        try { await ensureOffscreen(); } catch (e) {
+          sendResponse({ success: false, error: "The background worker could not be started." });
+          return;
+        }
+        chrome.runtime.sendMessage({ target: "callpoll", type: "probe", config: message.config })
+          .then(sendResponse)
+          .catch((e) => sendResponse({ success: false, error: String(e.message || e) }));
+      })();
       return true;
 
     // The operator ended the share from Chrome's own "Stop sharing" bar. The
@@ -887,6 +1047,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }
           });
         }
+        // A changed name, URL or key must take effect now, not at next restart.
+        syncCallPoller();
         sendResponse({ success: true });
       });
       return true;
@@ -934,7 +1096,7 @@ async function ensureOffscreen() {
     await chrome.offscreen.createDocument({
       url: chrome.runtime.getURL("offscreen.html"),
       reasons: ["BLOBS"],
-      justification: "Assemble a session bundle and hand back a blob URL for download."
+      justification: "Assemble session bundles and watch the call-state endpoint on a short timer."
     });
   })();
   try { await offscreenReady; } catch (e) { offscreenReady = null; throw e; }

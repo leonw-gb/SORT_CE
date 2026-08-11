@@ -371,6 +371,28 @@
     </fieldset>
 
     <fieldset>
+      <legend>Record when I am on a call</legend>
+      <div class="setting">
+        <label for="callUrl">Call-state address</label>
+        <input type="text" id="callUrl" placeholder="https://…/api/calls/live">
+        <div class="help-text">Leave empty to switch call recording off. SORT checks this
+          address every couple of seconds and starts recording when a call is answered
+          under the name above.</div>
+      </div>
+      <div class="setting">
+        <label for="callKey">API key</label>
+        <input type="password" id="callKey" placeholder="">
+        <div class="help-text">Sent as X-API-Key. Stored in this browser only.</div>
+      </div>
+      <div class="setting">
+        <label for="callInterval">Check every (seconds)</label>
+        <input type="number" id="callInterval" min="1" max="60" step="1" placeholder="2">
+      </div>
+      <button class="btn btn-secondary" id="testCall">Test the call connection</button>
+      <div class="help-text" id="callStatus" role="status"></div>
+    </fieldset>
+
+    <fieldset>
       <legend>SOP steps</legend>
       <div class="setting">
         <textarea id="sopSteps" placeholder="1 - Observe / reproduce&#10;2 - Diagnose root cause&#10;3 - Apply fix&#10;4 - Verify resolved"></textarea>

@@ -353,3 +353,79 @@ managed machines the default can be pre-set with the `ExtensionSettings` policy.
 The shortcut cannot skip the share picker. Chrome requires a genuine click
 inside the capture window before it releases a stream, so starting is
 "keystroke, then one click", while stopping is fully hands-free.
+
+## v2.25.0 - Recording starts when you answer a call
+
+SORT can now start itself when a call is answered under your Sipgate name, and
+prompt when that call ends. Off until an address is entered in Settings.
+
+### Why polling and not a webhook
+A Chrome extension has no public URL, so nothing can push to it. It polls
+instead, every 2 seconds by default, and that turns out to be the better shape:
+polling is self-healing. A missed poll is invisible two seconds later; a missed
+push is a recording that never started and never recovers.
+
+The poll lives in the OFFSCREEN document, not the service worker. The worker is
+torn down after ~30s idle and `chrome.alarms` cannot fire more often than once a
+minute -- either would turn "starts when I answer" into "starts up to a minute
+later", which loses exactly the minute that explains the problem.
+
+### The rule, from the real payloads
+Verified against actual n8n executions of our hotline:
+
+| event | direction | `user` field | means |
+|---|---|---|---|
+| `newCall` | in | ARRAY of all 16 logged-in agents | the group is ringing, nobody has it |
+| `answer` | in | STRING, e.g. `"Rahel Mueller"` | this person took the call |
+| `newCall` | out | STRING | this person placed the call |
+| `hangup` | either | absent entirely | only `callId` identifies it |
+
+So one rule covers both directions: **a scalar `user` matching the configured
+name means the call is mine and live.** An array never matches. That is what
+stops an inbound hotline ring from opening a screen picker on sixteen machines
+at once.
+
+`hangup` carries no identity at all -- not even `answeringNumber`, which is the
+hotline's own number on hangup and empty on answer. So the end of a call is
+matched by `callId` against the call the session is following, never by name.
+
+### Name matching
+Matching is on the display name, folded before comparison, because the roster is
+hand-maintained and shows it: two entries in a real payload had a leading space
+(`" Valentin Resapow"`). Case, surrounding and repeated whitespace are ignored,
+and umlauts are folded BOTH ways -- `Schütz` matches `Schuetz` and `Schutz` --
+because the two conventions disagree and both are in use. Without that, one
+spelling would silently never record and look like a broken endpoint.
+
+### What happens
+* **Answered under your name** -> a recording starts, the screen picker opens.
+  No click is needed first: SORT uses `chrome.desktopCapture`, which has no
+  user-gesture requirement (unlike `getDisplayMedia`).
+* **Already recording** -> the call is attached to the running session rather
+  than starting a second one. One recording at a time, always.
+* **Call ends** -> the "still recording?" prompt appears, now saying *the call
+  ended*. Nothing stops on its own: the write-up after a call is usually the
+  part worth keeping.
+* **Someone else answers** -> nothing happens.
+* **Reload mid-call** -> the running call is adopted silently, so its hangup
+  still prompts, but no picker appears for a call answered ten minutes ago.
+
+### Settings
+`Record when I am on a call`: address, API key (sent as `X-API-Key`), and the
+interval. Empty address = off. **Test the call connection** makes the same
+request the poller makes and reports what came back -- whether the JSON parsed,
+how many calls are live, and whether any is under your name. Run it while on a
+call and it confirms the whole chain in one click.
+
+### Endpoint shapes accepted
+The endpoint is not built yet, so the reader accepts the plausible shapes rather
+than betting on one: a bare array of calls, `{calls:[...]}` (or `live`, `data`,
+`items`, `results`), or a single state object with `state: "idle"` / `"active"`.
+Per call it reads `callId`, `event`, `user`, `direction`, `from`, `to` and a
+timestamp, each with the usual aliases.
+
+### Failure behaviour
+Three consecutive failures and the poll backs off geometrically to a 60s
+ceiling, logging once rather than every two seconds. It recovers to the normal
+interval on the first success. A request that outlives its own interval is
+aborted.

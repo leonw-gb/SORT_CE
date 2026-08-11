@@ -269,6 +269,11 @@ function currentConfig() {
       .map((label, i) => ({ id: "step_" + (i + 1), label })),
     downloadFolder: val("downloadFolder") || "Recordings",
     sipgateName: val("sipgateName"),
+    callTrigger: {
+      url: val("callUrl"),
+      apiKey: val("callKey"),
+      intervalMs: Math.max(1000, (Number(val("callInterval")) || 2) * 1000)
+    },
     theme: currentTheme,
     odoo: { username: val("odooUser"), apiKey: val("odooKey") }
   });
@@ -343,6 +348,46 @@ document.getElementById("testOdoo").addEventListener("click", async () => {
   btn.textContent = "Test the Odoo connection";
 });
 
+// The test hits the endpoint exactly as the poller will, and reports what it
+// found rather than a bare "OK": whether the JSON parsed, how many live calls
+// came back, and -- the useful part -- whether the configured name matches one
+// of them. Run it while on a call and it tells you the whole thing works.
+document.getElementById("testCall").addEventListener("click", async () => {
+  const btn = document.getElementById("testCall");
+  const out = document.getElementById("callStatus");
+  const cfg = currentConfig();
+  if (!cfg.callTrigger.url) {
+    out.textContent = "Enter the call-state address first.";
+    return;
+  }
+  if (!cfg.sipgateName) {
+    flagNameField("Enter your Sipgate name first: the test matches calls against it.");
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "Testing\u2026";
+  out.textContent = "";
+  chrome.runtime.sendMessage({
+    type: "probeCallEndpoint",
+    config: { url: cfg.callTrigger.url, apiKey: cfg.callTrigger.apiKey, name: cfg.sipgateName }
+  }, (res) => {
+    btn.disabled = false;
+    btn.textContent = "Test the call connection";
+    if (!res) { out.textContent = "No answer from the background worker."; return; }
+    if (!res.success && res.error) { out.textContent = `Could not reach it: ${res.error}`; return; }
+    if (!res.success) {
+      out.textContent = res.status === 401 || res.status === 403
+        ? `Rejected (HTTP ${res.status}). Check the API key.`
+        : `The address answered HTTP ${res.status}.`;
+      return;
+    }
+    if (!res.parsed) { out.textContent = "Reached it, but the answer was not JSON."; return; }
+    out.textContent = res.mine
+      ? `Connected. You are on a call right now — recording would start.`
+      : `Connected. ${res.calls} call${res.calls === 1 ? "" : "s"} live, none under "${cfg.sipgateName}".`;
+  });
+});
+
 function loadConfig() {
   chrome.runtime.sendMessage({ type: "getConfig" }, (config) => {
     const c = withFixedSettings(config);
@@ -353,6 +398,10 @@ function loadConfig() {
     document.getElementById("sipgateName").value = c.sipgateName || "";
     document.getElementById("odooUser").value = c.odoo?.username || "";
     document.getElementById("odooKey").value = c.odoo?.apiKey || "";
+    document.getElementById("callUrl").value = c.callTrigger?.url || "";
+    document.getElementById("callKey").value = c.callTrigger?.apiKey || "";
+    document.getElementById("callInterval").value =
+      Math.round((c.callTrigger?.intervalMs || 2000) / 1000);
     markTheme(c.theme);
   });
 }

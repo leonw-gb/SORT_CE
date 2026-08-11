@@ -5,8 +5,14 @@
 <!-- Invisible. Exists because a service worker cannot call
      URL.createObjectURL, and a session bundle is far too large to pass
      through a data: URL. The worker asks this document to build the bundle
-     and hand back a blob: URL for chrome.downloads. -->
+     and hand back a blob: URL for chrome.downloads.
+
+     It also polls the call-state endpoint: the worker is torn down after ~30s
+     idle and chrome.alarms cannot fire faster than once a minute, so neither
+     can notice an answered call within a couple of seconds. This document can. -->
 <script src="sortz.js"></script>
+<script src="callmatch.js"></script>
+<script src="callpoll.js"></script>
 <script src="offscreen.js"></script>
 </body>
 </html>
