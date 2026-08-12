@@ -29,13 +29,39 @@ let lastOkAt = null;
 let inFlight = false;
 let lastPollAt = null;
 
+// ---- flight recorder ----------------------------------------------------------
+// Every decision the watcher makes, kept in a small ring buffer the popup can
+// read. Without it, "the watcher is running but nothing happened" is
+// unfalsifiable: the interesting moment is two seconds long and the service
+// worker's console is usually closed when it passes.
+const LOG_MAX = 60;
+const pollLog = [];
+function note(what, extra) {
+  pollLog.push(Object.assign({ t: Date.now(), what }, extra || {}));
+  if (pollLog.length > LOG_MAX) pollLog.shift();
+}
+
 function schedule(ms) {
   clearTimeout(timer);
   timer = setTimeout(tick, ms);
 }
 
+// The worker is asleep most of the time. sendMessage wakes it, but if it is
+// mid-teardown the send can reject -- and a swallowed rejection here is a
+// recording that never starts, with nothing anywhere to say why. Retry once,
+// and record the outcome either way.
 function report(msg) {
-  chrome.runtime.sendMessage(Object.assign({ target: "worker" }, msg)).catch(() => {});
+  const full = Object.assign({ target: "worker" }, msg);
+  chrome.runtime.sendMessage(full)
+    .then(() => note("sent", { type: msg.type }))
+    .catch((e) => {
+      note("send failed, retrying", { type: msg.type, error: String((e && e.message) || e) });
+      setTimeout(() => {
+        chrome.runtime.sendMessage(full)
+          .then(() => note("sent on retry", { type: msg.type }))
+          .catch((e2) => note("SEND FAILED", { type: msg.type, error: String((e2 && e2.message) || e2) }));
+      }, 500);
+    });
 }
 
 async function tick() {
@@ -80,6 +106,7 @@ async function tick() {
   // The whole decision, in one call.
   const mine = findMyCall(payload, cfg.name);
   const sig = callSignature(mine);
+  if (sig !== lastSig) note("state changed", { from: lastSig, to: sig });
 
   if (sig !== lastSig) {
     const prev = lastSig;
@@ -96,11 +123,18 @@ async function tick() {
     // treated as fresh, not adopted.
     if (prev === null) {
       const age = mine && mine.at ? Date.now() - mine.at : Infinity;
-      if (mine && age < FRESH_CALL_MS) report({ type: "callStateStarted", call: mine });
-      else report({ type: "callStateAdopted", call: mine || null });
+      if (mine && age < FRESH_CALL_MS) {
+        note("first poll, call is fresh -> start", { callId: mine.callId, ageMs: age });
+        report({ type: "callStateStarted", call: mine });
+      } else {
+        note("first poll -> adopt (no picker)", { callId: mine ? mine.callId : null, ageMs: age });
+        report({ type: "callStateAdopted", call: mine || null });
+      }
     } else if (mine) {
+      note("answered -> start recording", { callId: mine.callId, event: mine.event });
       report({ type: "callStateStarted", call: mine });
     } else {
+      note("call ended", { callId: prev.split("|")[0] });
       report({ type: "callStateEnded", callId: prev.split("|")[0] });
     }
   }
@@ -109,6 +143,7 @@ async function tick() {
 }
 
 function start(next) {
+  note("watcher configured", { url: next && next.url, name: next && next.name });
   cfg = next;
   currentDelay = (cfg && cfg.intervalMs) || DEFAULT_INTERVAL_MS;
   fails = 0;
@@ -212,7 +247,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         lastError,
         lastOkAt,
         onCall: lastSig || null,
-        lastPollAt: lastPollAt || null
+        lastPollAt: lastPollAt || null,
+        log: pollLog.slice(-25)
       });
       return false;
     // A one-shot fetch for the Settings "Test" button: same request the poller

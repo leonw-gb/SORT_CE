@@ -465,16 +465,76 @@ function showNoMatch(res, myName) {
 function reportPollerHealth() {
   const out = document.getElementById("callStatus");
   chrome.runtime.sendMessage({ type: "callPollerStatus" }, (st) => {
-    const e = document.createElement("div");
-    e.style.marginTop = "6px";
+    const box = document.createElement("div");
+    box.style.marginTop = "8px";
+
+    const head = document.createElement("div");
     if (!st || !st.polling) {
-      e.textContent = "The watcher is NOT running, so nothing would start a recording. Save the settings to start it.";
+      head.textContent = "The watcher is NOT running, so nothing would start a recording. Save the settings to start it.";
     } else {
       const ago = st.lastPollAt ? Math.round((Date.now() - st.lastPollAt) / 1000) : null;
-      e.textContent = `The watcher is running${ago === null ? "" : `, last checked ${ago}s ago`}` +
+      head.textContent = `The watcher is running${ago === null ? "" : `, last checked ${ago}s ago`}` +
         (st.consecutiveFailures ? ` · ${st.consecutiveFailures} failed checks (${st.lastError || "unknown"})` : "") + ".";
     }
-    out.appendChild(e);
+    box.appendChild(head);
+
+    // The watcher matches against the SAVED name, the test against the one in
+    // the form. When those differ, the test passes and nothing records -- so
+    // show what the watcher is actually using rather than assuming they agree.
+    if (st && st.polling) {
+      const typed = document.getElementById("sipgateName").value.trim();
+      const w = document.createElement("div");
+      w.style.marginTop = "4px";
+      w.textContent = `Watching as "${st.name || "(no name)"}" · ${st.url || "(no address)"}`;
+      box.appendChild(w);
+      if (typed && st.name && typed.toLowerCase() !== String(st.name).toLowerCase()) {
+        const warn = document.createElement("div");
+        warn.style.marginTop = "4px";
+        warn.textContent = `The name in the form ("${typed}") is not the one the watcher is using. Save the settings.`;
+        box.appendChild(warn);
+      }
+      if (st.onCall) {
+        const c = document.createElement("div");
+        c.style.marginTop = "4px";
+        c.textContent = `The watcher currently sees you on call ${st.onCall}.`;
+        box.appendChild(c);
+      }
+    }
+
+    // The decision trail: what the watcher saw and what the worker did with
+    // it. This is the only view of the two-second window where a trigger is
+    // either delivered or lost.
+    const entries = []
+      .concat((st && st.log) || [])
+      .concat((st && st.trail) || [])
+      .sort((a, b) => a.t - b.t)
+      .slice(-18);
+    if (entries.length) {
+      const label = document.createElement("div");
+      label.style.marginTop = "6px";
+      label.textContent = "What the watcher did:";
+      box.appendChild(label);
+
+      const pre = document.createElement("pre");
+      pre.textContent = entries.map((e) => {
+        const d = new Date(e.t);
+        const hh = String(d.getHours()).padStart(2, "0");
+        const mm = String(d.getMinutes()).padStart(2, "0");
+        const ss = String(d.getSeconds()).padStart(2, "0");
+        const bits = Object.keys(e)
+          .filter((k) => k !== "t" && k !== "what" && e[k] !== undefined && e[k] !== null && e[k] !== false)
+          .map((k) => `${k}=${e[k]}`)
+          .join(" ");
+        return `${hh}:${mm}:${ss}  ${e.what}${bits ? "  " + bits : ""}`;
+      }).join("\n");
+      pre.style.cssText =
+        "margin:4px 0 0; padding:8px; max-height:170px; overflow:auto; white-space:pre-wrap; " +
+        "word-break:break-all; font-size:11px; border:1px solid var(--line2); " +
+        "border-radius:6px; background:var(--panel2);";
+      box.appendChild(pre);
+    }
+
+    out.appendChild(box);
   });
 }
 

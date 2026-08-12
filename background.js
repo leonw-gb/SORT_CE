@@ -769,7 +769,21 @@ async function handleCallEnded(callId) {
   openContinueWindow(FIXED.continueMinutes, "call");
 }
 
+// ---- worker trail --------------------------------------------------------------
+// Mirrors the watcher's flight recorder on the worker side, in chrome.storage
+// because the worker is destroyed between events and an in-memory array would
+// vanish exactly when it is needed.
+async function trail(what, extra) {
+  try {
+    const { callTrail = [] } = await chrome.storage.local.get("callTrail");
+    callTrail.push(Object.assign({ t: Date.now(), what }, extra || {}));
+    while (callTrail.length > 40) callTrail.shift();
+    await chrome.storage.local.set({ callTrail });
+  } catch (e) { /* a lost log line must never break a recording */ }
+}
+
 async function handleCallStarted(call) {
+  await trail("worker received callStarted", { callId: call.callId, event: call.event });
   const res = await startSession({
     trigger: "call",
     call: {
@@ -782,6 +796,12 @@ async function handleCallStarted(call) {
   });
   // Follow this call whether it opened a session or joined the running one:
   // either way its hangup is the one that concerns us.
+  await trail(res && res.success ? "recording started" : "recording REFUSED", {
+    callId: call.callId,
+    joined: !!(res && res.joinedExisting),
+    error: res && res.error,
+    needsName: !!(res && res.needsName)
+  });
   if (res && res.success) followedCallId = call.callId;
   return res;
 }
@@ -903,9 +923,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ polling: false, error: "The background worker could not be started." });
           return;
         }
+        const { callTrail = [] } = await chrome.storage.local.get("callTrail");
         chrome.runtime.sendMessage({ target: "callpoll", type: "status" })
-          .then((r) => sendResponse(r || { polling: false }))
-          .catch(() => sendResponse({ polling: false }));
+          .then((r) => sendResponse(Object.assign({ polling: false }, r, { trail: callTrail.slice(-20) })))
+          .catch(() => sendResponse({ polling: false, trail: callTrail.slice(-20) }));
       })();
       return true;
 
