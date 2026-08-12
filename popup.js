@@ -352,6 +352,41 @@ document.getElementById("testOdoo").addEventListener("click", async () => {
 // found rather than a bare "OK": whether the JSON parsed, how many live calls
 // came back, and -- the useful part -- whether the configured name matches one
 // of them. Run it while on a call and it tells you the whole thing works.
+// Print the headline plus what actually came back, so a failing test can be
+// diagnosed from the popup instead of from devtools.
+function showCallResult(headline, res) {
+  const out = document.getElementById("callStatus");
+  out.textContent = "";
+  const h = document.createElement("div");
+  h.textContent = headline;
+  out.appendChild(h);
+
+  const facts = [];
+  if (res.contentType) facts.push(`Content type: ${res.contentType}`);
+  if (res.redirected && res.finalUrl) facts.push(`Redirected to: ${res.finalUrl}`);
+  if (facts.length) {
+    const f = document.createElement("div");
+    f.textContent = facts.join(" · ");
+    f.style.marginTop = "4px";
+    out.appendChild(f);
+  }
+
+  if (res.sample) {
+    const pre = document.createElement("pre");
+    pre.textContent = res.sample;
+    pre.style.cssText =
+      "margin:6px 0 0; padding:8px; max-height:140px; overflow:auto; " +
+      "white-space:pre-wrap; word-break:break-all; font-size:11px; " +
+      "border:1px solid var(--line2); border-radius:6px; background:var(--panel2);";
+    out.appendChild(pre);
+  } else {
+    const e = document.createElement("div");
+    e.textContent = "The response body was empty.";
+    e.style.marginTop = "4px";
+    out.appendChild(e);
+  }
+}
+
 document.getElementById("testCall").addEventListener("click", async () => {
   const btn = document.getElementById("testCall");
   const out = document.getElementById("callStatus");
@@ -376,12 +411,21 @@ document.getElementById("testCall").addEventListener("click", async () => {
     if (!res) { out.textContent = "No answer from the background worker."; return; }
     if (!res.success && res.error) { out.textContent = `Could not reach it: ${res.error}`; return; }
     if (!res.success) {
-      out.textContent = res.status === 401 || res.status === 403
-        ? `Rejected (HTTP ${res.status}). Check the API key.`
-        : `The address answered HTTP ${res.status}.`;
+      showCallResult(
+        res.status === 401 || res.status === 403
+          ? `Rejected (HTTP ${res.status}). Check the API key.`
+          : `The address answered HTTP ${res.status}.`,
+        res);
       return;
     }
-    if (!res.parsed) { out.textContent = "Reached it, but the answer was not JSON."; return; }
+    // Not JSON is the interesting failure: the address is reachable but is
+    // answering with something else -- a login page, an HTML error, an XML
+    // body. Printing the first lines of it is the difference between "wrong
+    // path" and "not signed in", so it is shown rather than summarised away.
+    if (!res.parsed) {
+      showCallResult("Reached it, but the answer was not JSON.", res);
+      return;
+    }
     out.textContent = res.mine
       ? `Connected. You are on a call right now — recording would start.`
       : `Connected. ${res.calls} call${res.calls === 1 ? "" : "s"} live, none under "${cfg.sipgateName}".`;

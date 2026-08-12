@@ -155,6 +155,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             parsed: json !== null,
             calls: json !== null ? callList(json).length : 0,
             mine: json !== null ? !!findMyCall(json, message.config.name) : false,
+            contentType: res.headers.get("content-type") || "",
+            finalUrl: res.url || message.config.url,
+            redirected: !!res.redirected,
             sample: text.slice(0, 400)
           });
         } catch (e) {
