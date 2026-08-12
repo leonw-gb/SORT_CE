@@ -73,6 +73,29 @@ function callList(payload) {
   return [payload];
 }
 
+// Some endpoints nest the original push under "_raw" as an object, others keep
+// it under "payload" as a JSON STRING. Both are the same thing; read either.
+function innerOf(c) {
+  if (c._raw && typeof c._raw === "object") return c._raw;
+  for (const k of ["_raw", "payload", "body", "raw"]) {
+    const v = c[k];
+    if (v && typeof v === "object") return v;
+    if (typeof v === "string" && v.trim().startsWith("{")) {
+      try { return JSON.parse(v); } catch (e) { /* a string that is not JSON */ }
+    }
+  }
+  return {};
+}
+
+function timeOf(c) {
+  const v = pick(c, ["answeredAt", "answered_at", "startedAt", "started_at",
+                     "receivedAt", "received_at", "timestamp", "time", "createdAt", "created_at"]);
+  if (v == null) return null;
+  if (typeof v === "number") return v < 1e12 ? v * 1000 : v;   // seconds or ms
+  const t = Date.parse(v);
+  return Number.isNaN(t) ? null : t;
+}
+
 const pick = (o, keys) => {
   for (const k of keys) {
     if (o[k] !== undefined && o[k] !== null && o[k] !== "") return o[k];
@@ -85,7 +108,7 @@ const pick = (o, keys) => {
 // on inbound newCall anyway.
 function normalizeCall(c) {
   if (!c || typeof c !== "object") return null;
-  const rawInner = (c._raw && typeof c._raw === "object") ? c._raw : {};
+  const rawInner = innerOf(c);
   const callId = pick(c, ["callId", "call_id", "id", "origCallId"]) ||
                  pick(rawInner, ["callId", "call_id", "id", "origCallId"]);
   if (!callId) return null;
@@ -101,9 +124,9 @@ function normalizeCall(c) {
   const raw = rawInner;
   const rawUser =
     c.user !== undefined ? c.user
-    : pick(c, ["users", "user[]", "agent", "agents", "answeredBy", "answered_by", "owner", "member"])
+    : pick(c, ["userName", "user_name", "users", "user[]", "agent", "agents", "answeredBy", "answered_by", "owner", "member"])
       ?? (raw.user !== undefined ? raw.user
-          : pick(raw, ["users", "user[]", "agent", "answeredBy", "answered_by"]));
+          : pick(raw, ["userName", "user_name", "users", "user[]", "agent", "answeredBy", "answered_by"]));
 
   // The distinction the whole design rests on.
   const users = Array.isArray(rawUser) ? rawUser.filter((u) => typeof u === "string") : [];
@@ -117,7 +140,8 @@ function normalizeCall(c) {
     direction: String(pick(c, ["direction", "dir"]) || "in").toLowerCase() === "out" ? "out" : "in",
     from: pick(c, ["from", "caller", "fromNumber"]),
     to: pick(c, ["to", "callee", "toNumber"]),
-    at: Number(pick(c, ["answeredAt", "answered_at", "startedAt", "started_at", "timestamp", "time"])) || null
+    at: timeOf(c),
+    seq: Number(pick(c, ["id", "seq", "sequence"])) || null
   };
 }
 
@@ -133,27 +157,23 @@ function isEnded(n) {
 // "did it fail" but "what names did it offer, and under which key". This
 // reports exactly that, so a mismatch is read off the screen rather than
 // guessed at.
-function describePayload(payload, myName) {
-  const list = callList(payload);
+function describePayload(payload, myName, opts) {
+  const rows = callList(payload);
+  const cur = currentCalls(payload, opts);
   const names = new Set();
   const events = new Set();
   const keys = new Set();
-  let live = 0, ended = 0, unnamed = 0;
+  let unnamed = 0;
 
-  for (const raw of list) {
-    if (raw && typeof raw === "object") Object.keys(raw).forEach((k) => keys.add(k));
-    const n = normalizeCall(raw);
-    if (!n) continue;
-    if (n.event) events.add(n.event);
-    if (isEnded(n)) { ended++; continue; }
-    live++;
-    if (n.user) names.add(n.user);
-    else if (n.users.length) n.users.forEach((u) => names.add(u));
-    else unnamed++;
-  }
+  rows.forEach((r) => {
+    if (r && typeof r === "object") Object.keys(r).forEach((k) => keys.add(k));
+    const n = normalizeCall(r);
+    if (n && n.event) events.add(n.event);
+    if (n && n.user) names.add(n.user);
+    else if (n && n.users.length) n.users.forEach((u) => names.add(u));
+  });
+  cur.forEach((n) => { if (!n.user && !n.users.length) unnamed++; });
 
-  // A name that is present but spelled differently is the single most likely
-  // cause, so surface the closest fold rather than the raw list alone.
   const mine = foldVariants(myName);
   const nearly = [...names].filter((nm) => {
     const v = foldVariants(nm);
@@ -162,22 +182,66 @@ function describePayload(payload, myName) {
   });
 
   return {
-    total: list.length,
-    live, ended, unnamed,
+    total: rows.length,
+    rows: rows.length,
+    distinct: new Set(rows.map((r) => { const n = normalizeCall(r); return n && n.callId; }).filter(Boolean)).size,
+    live: cur.length,
+    ended: 0,
+    unnamed,
     events: [...events],
     entryKeys: [...keys].slice(0, 20),
     names: [...names].slice(0, 40),
     nearly: nearly.slice(0, 5),
-    firstEntry: list.length ? JSON.stringify(list[0]).slice(0, 400) : ""
+    liveSummary: cur.slice(0, 5).map((n) =>
+      `${n.callId.slice(0, 16)}… ${n.event} ${n.direction} ${n.user || "(no name)"}`),
+    firstEntry: rows.length ? JSON.stringify(rows[rows.length - 1]).slice(0, 400) : ""
   };
 }
 
+// The endpoint returns an append-only EVENT LOG, not a list of active calls:
+// newCall, answer and hangup all arrive as separate rows and nothing is ever
+// removed. Reading it row by row counts one call three times and never sees a
+// hangup retire the answer that preceded it -- which is why 51 rows read as
+// "30 live".
+//
+// So collapse it first: group every row by callId, keep the LAST row per call
+// (by sequence id, falling back to timestamp), and treat that as the call's
+// current state. A call whose last row is a hangup is over. Everything else
+// follows from the same rule as before.
+const MAX_CALL_AGE_MS = 6 * 60 * 60 * 1000;   // a call still "live" after six hours is a log artefact
+
+function currentCalls(payload, opts) {
+  const now = (opts && opts.now) || Date.now();
+  const byId = new Map();
+
+  callList(payload).forEach((row, i) => {
+    const n = normalizeCall(row);
+    if (!n) return;
+    n._ord = (n.seq != null) ? n.seq : (n.at != null ? n.at : i);
+    const prev = byId.get(n.callId);
+    if (!prev || n._ord >= prev._ord) {
+      // The name rides on the answer row; a later hangup row carries none.
+      // Keep the one we learned so a finished call can still be attributed.
+      if (prev && !n.user && prev.user) n.user = prev.user;
+      if (prev && !n.users.length && prev.users.length) n.users = prev.users;
+      if (prev && n.at == null) n.at = prev.at;
+      byId.set(n.callId, n);
+    }
+  });
+
+  return [...byId.values()].filter((n) => {
+    if (isEnded(n)) return false;
+    // A newCall or answer that was never hung up, hours ago, is a log that
+    // lost its closing row -- not a call anyone is still on.
+    if (n.at != null && now - n.at > MAX_CALL_AGE_MS) return false;
+    return true;
+  });
+}
+
 // The answer to the only question: the live call this operator is on, or null.
-function findMyCall(payload, myName) {
+function findMyCall(payload, myName, opts) {
   if (!foldName(myName)) return null;
-  for (const raw of callList(payload)) {
-    const n = normalizeCall(raw);
-    if (!n || isEnded(n)) continue;
+  for (const n of currentCalls(payload, opts)) {
     if (n.user && namesMatch(n.user, myName)) return n;
   }
   return null;
@@ -191,5 +255,5 @@ function callSignature(myCall) {
 }
 
 if (typeof globalThis !== "undefined") {
-  Object.assign(globalThis, { foldName, foldVariants, namesMatch, findMyCall, callSignature, normalizeCall, callList, describePayload, isEnded });
+  Object.assign(globalThis, { foldName, foldVariants, namesMatch, findMyCall, callSignature, normalizeCall, callList, describePayload, isEnded, currentCalls, innerOf });
 }

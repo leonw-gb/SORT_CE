@@ -420,47 +420,41 @@ function showNoMatch(res, myName) {
   out.textContent = "";
   const d = res.detail || {};
 
-  const h = document.createElement("div");
-  h.textContent = `Connected. ${res.calls} call${res.calls === 1 ? "" : "s"} returned, none under "${myName}".`;
-  out.appendChild(h);
-
-  const line = (text) => {
+  const line = (text, top) => {
     const e = document.createElement("div");
     e.textContent = text;
-    e.style.marginTop = "4px";
+    if (top) e.style.marginTop = "4px";
     out.appendChild(e);
   };
 
-  if (d.live !== undefined) {
-    line(`${d.live} live · ${d.ended} already ended${d.unnamed ? ` · ${d.unnamed} with no name` : ""}`);
-  }
-  if (d.events && d.events.length) line(`Events seen: ${d.events.join(", ")}`);
+  // The row count is not the call count: the endpoint is an event log, so one
+  // call is several rows. Report both, or "51 calls" reads as chaos.
+  line(d.distinct !== undefined
+    ? `Connected. ${d.rows} events covering ${d.distinct} call${d.distinct === 1 ? "" : "s"}.`
+    : `Connected. ${res.calls} calls returned.`);
 
-  if (d.nearly && d.nearly.length) {
-    line(`Close to your name: ${d.nearly.join(", ")} — copy the exact spelling into the name field.`);
-  } else if (d.names && d.names.length) {
-    line("Names in the response:");
+  line(d.live
+    ? `${d.live} call${d.live === 1 ? " is" : "s are"} still open, none answered by "${myName}".`
+    : `No call is open right now.`, true);
+
+  if (d.liveSummary && d.liveSummary.length) {
     const pre = document.createElement("pre");
-    pre.textContent = d.names.join("\n");
+    pre.textContent = d.liveSummary.join("\n");
     pre.style.cssText =
-      "margin:4px 0 0; padding:8px; max-height:120px; overflow:auto; white-space:pre-wrap; " +
+      "margin:4px 0 0; padding:8px; max-height:110px; overflow:auto; white-space:pre-wrap; " +
       "font-size:11px; border:1px solid var(--line2); border-radius:6px; background:var(--panel2);";
     out.appendChild(pre);
-  } else {
-    line("No names came back at all — the call entries carry no agent field.");
   }
 
-  if (d.entryKeys && d.entryKeys.length) line(`Fields per call: ${d.entryKeys.join(", ")}`);
-
-  if (d.firstEntry) {
-    line("First entry:");
-    const pre = document.createElement("pre");
-    pre.textContent = d.firstEntry;
-    pre.style.cssText =
-      "margin:4px 0 0; padding:8px; max-height:140px; overflow:auto; white-space:pre-wrap; " +
-      "word-break:break-all; font-size:11px; border:1px solid var(--line2); " +
-      "border-radius:6px; background:var(--panel2);";
-    out.appendChild(pre);
+  if (d.nearly && d.nearly.length) {
+    line(`Close to your name in the log: ${d.nearly.join(", ")} — copy that exact spelling into the name field.`, true);
+  } else if (d.names && d.names.length) {
+    line(`Names the log has seen: ${d.names.slice(0, 12).join(", ")}${d.names.length > 12 ? ", …" : ""}`, true);
+    if (!d.names.some((n) => n.toLowerCase().includes(myName.toLowerCase().split(" ")[0]))) {
+      line(`"${myName}" is not among them. Answer a call and test again, or check the spelling against the list.`, true);
+    }
+  } else {
+    line("The log carries no agent names at all, so no call can be attributed to you.", true);
   }
 }
 
