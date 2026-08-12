@@ -111,6 +111,72 @@ function stop() {
   lastSig = null;
 }
 
+
+// ---- probing ------------------------------------------------------------------
+function probeHeaders(config) {
+  const headers = { "Accept": "application/json" };
+  if (config.apiKey) headers["X-API-Key"] = config.apiKey;
+  return headers;
+}
+
+async function probeOnce(url, config, timeoutMs) {
+  const ctl = new AbortController();
+  const killer = setTimeout(() => ctl.abort(), timeoutMs || 8000);
+  let res;
+  try {
+    res = await fetch(url, { headers: probeHeaders(config), signal: ctl.signal, cache: "no-store" });
+  } finally {
+    clearTimeout(killer);
+  }
+  const text = await res.text();
+  let json = null;
+  try { json = JSON.parse(text); } catch (e) {}
+  return {
+    success: res.ok,
+    status: res.status,
+    parsed: json !== null,
+    calls: json !== null ? callList(json).length : 0,
+    mine: json !== null ? !!findMyCall(json, config.name) : false,
+    detail: json !== null ? describePayload(json, config.name) : null,
+    contentType: res.headers.get("content-type") || "",
+    finalUrl: res.url || url,
+    redirected: !!res.redirected,
+    sample: text.slice(0, 400)
+  };
+}
+
+// Paths a call-state service plausibly exposes, in the order they are worth
+// trying. Kept short on purpose: this fires a handful of requests at someone
+// else's server, not a scan.
+const CANDIDATE_PATHS = [
+  "/api/calls", "/api/calls/active", "/api/calls/live", "/api/active-calls",
+  "/api/state", "/api/status", "/api/call-state", "/api/current",
+  "/calls", "/calls/active", "/api/v1/calls", "/state"
+];
+
+async function findJsonPaths(config) {
+  let origin;
+  try { origin = new URL(config.url).origin; } catch (e) { return []; }
+  const base = config.url.replace(/\/+$/, "");
+  const tried = new Set([config.url]);
+  const found = [];
+
+  for (const path of CANDIDATE_PATHS) {
+    for (const url of [origin + path, base + path]) {
+      if (tried.has(url)) continue;
+      tried.add(url);
+      try {
+        const r = await probeOnce(url, config, 4000);
+        if (r.parsed && r.success) {
+          found.push({ url, calls: r.calls, mine: r.mine, sample: r.sample.slice(0, 120) });
+        }
+      } catch (e) { /* a path that does not exist is the normal case */ }
+      if (found.length >= 3) return found;
+    }
+  }
+  return found;
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target !== "callpoll") return false;
   switch (message.type) {
@@ -140,26 +206,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case "probe":
       (async () => {
         try {
-          const headers = { "Accept": "application/json" };
-          if (message.config.apiKey) headers["X-API-Key"] = message.config.apiKey;
-          const ctl = new AbortController();
-          const killer = setTimeout(() => ctl.abort(), 8000);
-          const res = await fetch(message.config.url, { headers, signal: ctl.signal, cache: "no-store" });
-          clearTimeout(killer);
-          const text = await res.text();
-          let json = null;
-          try { json = JSON.parse(text); } catch (e) {}
-          sendResponse({
-            success: res.ok,
-            status: res.status,
-            parsed: json !== null,
-            calls: json !== null ? callList(json).length : 0,
-            mine: json !== null ? !!findMyCall(json, message.config.name) : false,
-            contentType: res.headers.get("content-type") || "",
-            finalUrl: res.url || message.config.url,
-            redirected: !!res.redirected,
-            sample: text.slice(0, 400)
-          });
+          const out = await probeOnce(message.config.url, message.config);
+          // A single-page app answers EVERY path with its index.html, so a
+          // wrong API path looks exactly like a right one that is down. When
+          // the configured address returns a page, walk the usual API paths on
+          // the same origin and report the ones that answer JSON -- that turns
+          // "not JSON" from a dead end into a list of addresses to try.
+          if (!out.parsed) {
+            out.candidates = await findJsonPaths(message.config);
+          }
+          sendResponse(out);
         } catch (e) {
           sendResponse({ success: false, error: (e && e.name === "AbortError") ? "timed out" : String((e && e.message) || e) });
         }

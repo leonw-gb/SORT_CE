@@ -85,11 +85,25 @@ const pick = (o, keys) => {
 // on inbound newCall anyway.
 function normalizeCall(c) {
   if (!c || typeof c !== "object") return null;
-  const callId = pick(c, ["callId", "call_id", "id", "origCallId"]);
+  const rawInner = (c._raw && typeof c._raw === "object") ? c._raw : {};
+  const callId = pick(c, ["callId", "call_id", "id", "origCallId"]) ||
+                 pick(rawInner, ["callId", "call_id", "id", "origCallId"]);
   if (!callId) return null;
 
-  const event = String(pick(c, ["event", "state", "status", "type"]) || "").toLowerCase();
-  const rawUser = c.user !== undefined ? c.user : pick(c, ["users", "agent", "answeredBy", "answered_by"]);
+  const event = String(
+    pick(c, ["event", "state", "status", "type"]) ||
+    pick(rawInner, ["event", "state", "status", "type"]) || ""
+  ).toLowerCase();
+  // The normalized top level first, then _raw, then the sipgate wire spelling
+  // "user[]" that survives form-encoded pushes. A payload that carries the
+  // name only in a nested copy must still match, or the operator sees "none
+  // under your name" while their name is plainly in the response.
+  const raw = rawInner;
+  const rawUser =
+    c.user !== undefined ? c.user
+    : pick(c, ["users", "user[]", "agent", "agents", "answeredBy", "answered_by", "owner", "member"])
+      ?? (raw.user !== undefined ? raw.user
+          : pick(raw, ["users", "user[]", "agent", "answeredBy", "answered_by"]));
 
   // The distinction the whole design rests on.
   const users = Array.isArray(rawUser) ? rawUser.filter((u) => typeof u === "string") : [];
@@ -113,6 +127,51 @@ function isEnded(n) {
   return n.event === "hangup" || n.event === "ended" || n.event === "idle" || n.event === "completed";
 }
 
+
+// ---- diagnosis ----------------------------------------------------------------
+// When the endpoint answers but no call matches, the useful question is not
+// "did it fail" but "what names did it offer, and under which key". This
+// reports exactly that, so a mismatch is read off the screen rather than
+// guessed at.
+function describePayload(payload, myName) {
+  const list = callList(payload);
+  const names = new Set();
+  const events = new Set();
+  const keys = new Set();
+  let live = 0, ended = 0, unnamed = 0;
+
+  for (const raw of list) {
+    if (raw && typeof raw === "object") Object.keys(raw).forEach((k) => keys.add(k));
+    const n = normalizeCall(raw);
+    if (!n) continue;
+    if (n.event) events.add(n.event);
+    if (isEnded(n)) { ended++; continue; }
+    live++;
+    if (n.user) names.add(n.user);
+    else if (n.users.length) n.users.forEach((u) => names.add(u));
+    else unnamed++;
+  }
+
+  // A name that is present but spelled differently is the single most likely
+  // cause, so surface the closest fold rather than the raw list alone.
+  const mine = foldVariants(myName);
+  const nearly = [...names].filter((nm) => {
+    const v = foldVariants(nm);
+    return !v.some((x) => mine.includes(x)) &&
+           v.some((x) => mine.some((m) => x.includes(m.split(" ")[0]) || m.includes(x.split(" ")[0])));
+  });
+
+  return {
+    total: list.length,
+    live, ended, unnamed,
+    events: [...events],
+    entryKeys: [...keys].slice(0, 20),
+    names: [...names].slice(0, 40),
+    nearly: nearly.slice(0, 5),
+    firstEntry: list.length ? JSON.stringify(list[0]).slice(0, 400) : ""
+  };
+}
+
 // The answer to the only question: the live call this operator is on, or null.
 function findMyCall(payload, myName) {
   if (!foldName(myName)) return null;
@@ -132,5 +191,5 @@ function callSignature(myCall) {
 }
 
 if (typeof globalThis !== "undefined") {
-  Object.assign(globalThis, { foldName, foldVariants, namesMatch, findMyCall, callSignature, normalizeCall, callList });
+  Object.assign(globalThis, { foldName, foldVariants, namesMatch, findMyCall, callSignature, normalizeCall, callList, describePayload, isEnded });
 }

@@ -371,6 +371,31 @@ function showCallResult(headline, res) {
     out.appendChild(f);
   }
 
+  // Addresses on the same server that DID answer JSON. Offering them as
+  // buttons is the fix itself, not a hint about it.
+  if (res.candidates && res.candidates.length) {
+    const c = document.createElement("div");
+    c.style.marginTop = "6px";
+    c.textContent = res.candidates.length === 1
+      ? "This address on the same server answers JSON:"
+      : "These addresses on the same server answer JSON:";
+    out.appendChild(c);
+    res.candidates.forEach((cand) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = `Use ${cand.url}`;
+      b.style.cssText =
+        "display:block; width:100%; text-align:left; margin-top:4px; padding:6px 8px; " +
+        "font-size:11px; font-family:inherit; cursor:pointer; border-radius:6px; " +
+        "border:1px solid var(--line2); background:var(--panel2); color:var(--txt);";
+      b.addEventListener("click", () => {
+        document.getElementById("callUrl").value = cand.url;
+        out.textContent = "Address updated. Save the settings, then test again.";
+      });
+      out.appendChild(b);
+    });
+  }
+
   if (res.sample) {
     const pre = document.createElement("pre");
     pre.textContent = res.sample;
@@ -384,6 +409,58 @@ function showCallResult(headline, res) {
     e.textContent = "The response body was empty.";
     e.style.marginTop = "4px";
     out.appendChild(e);
+  }
+}
+
+
+// The endpoint answered but nothing matched. Print what it offered, so a
+// spelling difference or an unexpected field is read off the screen.
+function showNoMatch(res, myName) {
+  const out = document.getElementById("callStatus");
+  out.textContent = "";
+  const d = res.detail || {};
+
+  const h = document.createElement("div");
+  h.textContent = `Connected. ${res.calls} call${res.calls === 1 ? "" : "s"} returned, none under "${myName}".`;
+  out.appendChild(h);
+
+  const line = (text) => {
+    const e = document.createElement("div");
+    e.textContent = text;
+    e.style.marginTop = "4px";
+    out.appendChild(e);
+  };
+
+  if (d.live !== undefined) {
+    line(`${d.live} live · ${d.ended} already ended${d.unnamed ? ` · ${d.unnamed} with no name` : ""}`);
+  }
+  if (d.events && d.events.length) line(`Events seen: ${d.events.join(", ")}`);
+
+  if (d.nearly && d.nearly.length) {
+    line(`Close to your name: ${d.nearly.join(", ")} — copy the exact spelling into the name field.`);
+  } else if (d.names && d.names.length) {
+    line("Names in the response:");
+    const pre = document.createElement("pre");
+    pre.textContent = d.names.join("\n");
+    pre.style.cssText =
+      "margin:4px 0 0; padding:8px; max-height:120px; overflow:auto; white-space:pre-wrap; " +
+      "font-size:11px; border:1px solid var(--line2); border-radius:6px; background:var(--panel2);";
+    out.appendChild(pre);
+  } else {
+    line("No names came back at all — the call entries carry no agent field.");
+  }
+
+  if (d.entryKeys && d.entryKeys.length) line(`Fields per call: ${d.entryKeys.join(", ")}`);
+
+  if (d.firstEntry) {
+    line("First entry:");
+    const pre = document.createElement("pre");
+    pre.textContent = d.firstEntry;
+    pre.style.cssText =
+      "margin:4px 0 0; padding:8px; max-height:140px; overflow:auto; white-space:pre-wrap; " +
+      "word-break:break-all; font-size:11px; border:1px solid var(--line2); " +
+      "border-radius:6px; background:var(--panel2);";
+    out.appendChild(pre);
   }
 }
 
@@ -423,12 +500,20 @@ document.getElementById("testCall").addEventListener("click", async () => {
     // body. Printing the first lines of it is the difference between "wrong
     // path" and "not signed in", so it is shown rather than summarised away.
     if (!res.parsed) {
-      showCallResult("Reached it, but the answer was not JSON.", res);
+      const page = /text\/html/i.test(res.contentType || "");
+      showCallResult(page
+        ? "That address returns the CallHub web page, not call data. The poller needs the address that answers JSON."
+        : "Reached it, but the answer was not JSON.", res);
       return;
     }
-    out.textContent = res.mine
-      ? `Connected. You are on a call right now — recording would start.`
-      : `Connected. ${res.calls} call${res.calls === 1 ? "" : "s"} live, none under "${cfg.sipgateName}".`;
+    if (res.mine) {
+      out.textContent = "Connected. You are on a call right now — recording would start.";
+      return;
+    }
+    // "None under your name" while you are on a call is the confusing case:
+    // the endpoint answered, so the fault is in the matching, not the wiring.
+    // Show the names it did return -- the mismatch is then visible.
+    showNoMatch(res, cfg.sipgateName);
   });
 });
 
