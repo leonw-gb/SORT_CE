@@ -16,6 +16,8 @@ const DEFAULT_INTERVAL_MS = 2000;
 // endpoint being down must not turn into a request every two seconds forever.
 const BACKOFF_AFTER = 3;
 const MAX_INTERVAL_MS = 60000;
+// A call answered less than this ago is "just now", even on the first poll.
+const FRESH_CALL_MS = 45000;
 
 let cfg = null;            // { url, apiKey, name, intervalMs }
 let timer = null;
@@ -25,6 +27,7 @@ let currentDelay = DEFAULT_INTERVAL_MS;
 let lastError = null;
 let lastOkAt = null;
 let inFlight = false;
+let lastPollAt = null;
 
 function schedule(ms) {
   clearTimeout(timer);
@@ -39,6 +42,7 @@ async function tick() {
   if (!cfg || !cfg.url) return;
   if (inFlight) { schedule(currentDelay); return; }
   inFlight = true;
+  lastPollAt = Date.now();
 
   let payload = null;
   try {
@@ -83,8 +87,17 @@ async function tick() {
     // First poll after (re)start: adopt the state silently rather than
     // treating a call that was already running as freshly answered. Otherwise
     // reloading the extension mid-call opens a picker out of nowhere.
+    // First poll after (re)start. Normally this is an adoption: the extension
+    // reloaded mid-call and must not open a picker for a call answered ten
+    // minutes ago. But the offscreen document is also re-created by Chrome
+    // under memory pressure and by the keepalive repair -- and if that happens
+    // in the seconds after answering, a silent adopt swallows the ONLY trigger
+    // the call will ever produce. So a call that started moments ago is
+    // treated as fresh, not adopted.
     if (prev === null) {
-      report({ type: "callStateAdopted", call: mine || null });
+      const age = mine && mine.at ? Date.now() - mine.at : Infinity;
+      if (mine && age < FRESH_CALL_MS) report({ type: "callStateStarted", call: mine });
+      else report({ type: "callStateAdopted", call: mine || null });
     } else if (mine) {
       report({ type: "callStateStarted", call: mine });
     } else {
@@ -198,7 +211,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         consecutiveFailures: fails,
         lastError,
         lastOkAt,
-        onCall: lastSig || null
+        onCall: lastSig || null,
+        lastPollAt: lastPollAt || null
       });
       return false;
     // A one-shot fetch for the Settings "Test" button: same request the poller

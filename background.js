@@ -841,6 +841,14 @@ chrome.runtime.onInstalled.addListener(() => {
   syncCallPoller();
 });
 
+// Neither of the two events above fires when the worker is merely WOKEN -- by
+// a popup opening, a message, an alarm. A worker that starts that way would
+// have no poller and no keepalive until the next browser restart, which is
+// precisely the "the test passes but nothing records" state. Arm both on every
+// worker start; create() on an existing alarm is a no-op.
+chrome.alarms.create(POLL_KEEPALIVE_ALARM, { periodInMinutes: 1 });
+syncCallPoller();
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Messages addressed to another context (the offscreen document, the capture
   // window) travel through every listener in the extension. Ignore them here or
@@ -884,6 +892,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case "syncCallPoller":
       syncCallPoller().then(sendResponse);
+      return true;
+
+    // Is the poller actually running right now? The test button asks the
+    // endpoint; this asks the thing that is supposed to be asking it. A green
+    // test with a dead poller is the exact failure this exposes.
+    case "callPollerStatus":
+      (async () => {
+        try { await ensureOffscreen(); } catch (e) {
+          sendResponse({ polling: false, error: "The background worker could not be started." });
+          return;
+        }
+        chrome.runtime.sendMessage({ target: "callpoll", type: "status" })
+          .then((r) => sendResponse(r || { polling: false }))
+          .catch(() => sendResponse({ polling: false }));
+      })();
       return true;
 
     case "probeCallEndpoint":

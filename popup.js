@@ -456,6 +456,26 @@ function showNoMatch(res, myName) {
   } else {
     line("The log carries no agent names at all, so no call can be attributed to you.", true);
   }
+  reportPollerHealth();
+}
+
+// The test button proves the endpoint answers. This proves something is
+// actually watching it -- the two fail independently, and only one of them
+// starts recordings.
+function reportPollerHealth() {
+  const out = document.getElementById("callStatus");
+  chrome.runtime.sendMessage({ type: "callPollerStatus" }, (st) => {
+    const e = document.createElement("div");
+    e.style.marginTop = "6px";
+    if (!st || !st.polling) {
+      e.textContent = "The watcher is NOT running, so nothing would start a recording. Save the settings to start it.";
+    } else {
+      const ago = st.lastPollAt ? Math.round((Date.now() - st.lastPollAt) / 1000) : null;
+      e.textContent = `The watcher is running${ago === null ? "" : `, last checked ${ago}s ago`}` +
+        (st.consecutiveFailures ? ` · ${st.consecutiveFailures} failed checks (${st.lastError || "unknown"})` : "") + ".";
+    }
+    out.appendChild(e);
+  });
 }
 
 document.getElementById("testCall").addEventListener("click", async () => {
@@ -501,7 +521,8 @@ document.getElementById("testCall").addEventListener("click", async () => {
       return;
     }
     if (res.mine) {
-      out.textContent = "Connected. You are on a call right now — recording would start.";
+      out.textContent = "Connected. You are on a call right now.";
+      reportPollerHealth();
       return;
     }
     // "None under your name" while you are on a call is the confusing case:

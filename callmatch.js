@@ -75,6 +75,24 @@ function callList(payload) {
 
 // Some endpoints nest the original push under "_raw" as an object, others keep
 // it under "payload" as a JSON STRING. Both are the same thing; read either.
+// A user field that is a JSON array serialised into a string, or a plain
+// comma-separated roster, is still a group -- not a person.
+function maybeList(v) {
+  if (typeof v !== "string") return v;
+  const t = v.trim();
+  if (t.startsWith("[")) {
+    try {
+      const a = JSON.parse(t);
+      if (Array.isArray(a)) return a;
+    } catch (e) { /* not JSON after all */ }
+  }
+  // Two or more comma-separated full names is a ringing group, not a name.
+  if (t.includes(",") && t.split(",").filter((x) => x.trim()).length > 1) {
+    return t.split(",").map((x) => x.trim()).filter(Boolean);
+  }
+  return v;
+}
+
 function innerOf(c) {
   if (c._raw && typeof c._raw === "object") return c._raw;
   for (const k of ["_raw", "payload", "body", "raw"]) {
@@ -128,9 +146,14 @@ function normalizeCall(c) {
       ?? (raw.user !== undefined ? raw.user
           : pick(raw, ["userName", "user_name", "users", "user[]", "agent", "answeredBy", "answered_by"]));
 
-  // The distinction the whole design rests on.
-  const users = Array.isArray(rawUser) ? rawUser.filter((u) => typeof u === "string") : [];
-  const user = (!Array.isArray(rawUser) && typeof rawUser === "string" && rawUser.trim()) ? rawUser : null;
+  // The distinction the whole design rests on -- but the ringing group can
+  // arrive as a JSON STRING rather than an array once it has been through a
+  // database column. Unpack it, or a whole ringing roster reads as one absurd
+  // name and every agent looks "close to" whoever is configured.
+  const parsedUser = maybeList(rawUser);
+  const users = Array.isArray(parsedUser) ? parsedUser.filter((u) => typeof u === "string") : [];
+  const user = (!Array.isArray(parsedUser) && typeof parsedUser === "string" && parsedUser.trim())
+    ? parsedUser : null;
 
   return {
     callId: String(callId),
@@ -255,5 +278,5 @@ function callSignature(myCall) {
 }
 
 if (typeof globalThis !== "undefined") {
-  Object.assign(globalThis, { foldName, foldVariants, namesMatch, findMyCall, callSignature, normalizeCall, callList, describePayload, isEnded, currentCalls, innerOf });
+  Object.assign(globalThis, { foldName, foldVariants, namesMatch, findMyCall, callSignature, normalizeCall, callList, describePayload, isEnded, currentCalls, innerOf, maybeList });
 }
