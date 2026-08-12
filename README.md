@@ -502,3 +502,26 @@ Kept from the hunt, because each is a real weakness that hid this one:
     newest row wins, and a call whose last row is `hangup` is over.
   * `userName` may hold a ringing roster as a JSON *string*; it is unpacked so
     a group never reads as a person.
+
+
+## v2.26.2 - Upload rejected with HTTP 400 (wrong endpoint)
+
+Saving a session locally worked, and uploading that same file by hand through
+the server's page worked. Only the extension's own upload failed, with a bare
+"HTTP 400".
+
+The extension was posting the .sortz bundle to `/api/upload` as field `file`.
+That is the old VIDEO endpoint: it accepts a bare .webm and rejects anything
+else. Session hosting added `/api/session`, which takes the bundle as field
+`bundle` and answers 201 with `session_url`. Both the path AND the field name
+were wrong, so neither alone would have been enough to spot from the status
+code.
+
+Fixes:
+  * Bundles go to `POST /api/session`, field `bundle`.
+  * A 404/405 from that endpoint (a server predating session hosting) falls
+    back to the old `/api/upload` with field `file`, so an un-upgraded server
+    keeps working with the video-only link it can produce. A 400 is NOT
+    retried: it is a real complaint about this bundle.
+  * The server's own `error` message is shown instead of the status code, so a
+    refusal says what was wrong with the file.
