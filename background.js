@@ -833,13 +833,30 @@ async function consumeTrigger(t) {
   lastTriggerId = t.id;
   await trail("trigger picked up", { via: t._via || "storage", type: t.type });
   if (t.type === "callStateStarted") {
-    await handleCallStarted(t.call || {});
+    try {
+      await handleCallStarted(t.call || {});
+    } catch (e) {
+      await trail("handler THREW", { error: String((e && e.message) || e) });
+    }
   } else if (t.type === "callStateEnded") {
     await handleCallEnded(t.callId || null);
   } else if (t.type === "callStateAdopted") {
     if (t.call && activeSession) followedCallId = t.call.callId;
   }
 }
+
+
+// The watcher holds a port open so this worker cannot be torn down while a
+// call is being watched. Triggers arrive over it directly -- same shape, same
+// nonce, same de-duplication as the message and storage paths.
+chrome.runtime.onConnect.addListener((p) => {
+  if (p.name !== "callpoll-keepalive") return;
+  trail("watcher connected");
+  p.onMessage.addListener((msg) => {
+    consumeTrigger(Object.assign({ _via: "port" }, msg));
+  });
+  p.onDisconnect.addListener(() => { /* the watcher reconnects on its own */ });
+});
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local" || !changes.callTrigger) return;

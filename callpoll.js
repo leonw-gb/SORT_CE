@@ -61,20 +61,93 @@ function schedule(ms) {
 // The worker de-duplicates on the nonce, so arriving twice is harmless.
 let nonce = 0;
 
-function report(msg) {
-  const id = `${Date.now()}_${++nonce}`;
-  const full = Object.assign({ target: "worker", id }, msg);
+// ---- keeping the worker awake ---------------------------------------------------
+// The root problem, finally: a decision is only useful if something is alive to
+// act on it. chrome.runtime.sendMessage from an offscreen document does not
+// reliably revive a torn-down service worker, and a storage write races the
+// worker's own teardown.
+//
+// A long-lived Port does. While a port is connected the worker cannot be shut
+// down, and Chrome force-disconnects it after five minutes -- so it is
+// reconnected on a timer well inside that window. The worker is then simply
+// always up while a call is being watched, and delivery stops being a question.
+let port = null;
+let portTimer = null;
 
-  chrome.storage.local.set({ callTrigger: Object.assign({ id }, msg) })
-    .then(() => note("queued", { type: msg.type }))
-    .catch((e) => note("QUEUE FAILED", { type: msg.type, error: String((e && e.message) || e) }));
-
-  chrome.runtime.sendMessage(full)
-    .then(() => note("sent", { type: msg.type }))
-    .catch(() => note("worker asleep, storage will wake it", { type: msg.type }));
+function connectPort() {
+  clearTimeout(portTimer);
+  try {
+    port = chrome.runtime.connect({ name: "callpoll-keepalive" });
+    port.onDisconnect.addListener(() => {
+      port = null;
+      // Reconnect promptly: a disconnected port means the worker just died,
+      // which is exactly when the next trigger would be lost.
+      if (cfg && cfg.url) portTimer = setTimeout(connectPort, 1000);
+    });
+  } catch (e) {
+    note("port failed", { error: String((e && e.message) || e) });
+    port = null;
+    if (cfg && cfg.url) portTimer = setTimeout(connectPort, 5000);
+    return;
+  }
+  // Well inside Chrome's five-minute cap.
+  portTimer = setTimeout(connectPort, 4 * 60 * 1000);
 }
 
-async function tick() {
+function disconnectPort() {
+  clearTimeout(portTimer);
+  portTimer = null;
+  if (port) { try { port.disconnect(); } catch (e) {} }
+  port = null;
+}
+
+function report(msg) {
+  const id = `${Date.now()}_${++nonce}`;
+
+  // Everything here is wrapped, because an exception thrown on the way OUT of
+  // this function is invisible: it unwinds into a promise nobody awaits, the
+  // trail keeps its last line, and the recording simply never happens. The
+  // previous build logged nothing at all at this point, which is only possible
+  // if one of these calls threw synchronously.
+  try {
+    const p = chrome.storage.local.set({ callTrigger: Object.assign({ id }, msg) });
+    if (p && p.then) {
+      p.then(() => note("queued", { type: msg.type }))
+       .catch((e) => note("QUEUE FAILED", { error: String((e && e.message) || e) }));
+    } else {
+      note("queued (callback API)", { type: msg.type });
+    }
+  } catch (e) {
+    note("QUEUE THREW", { error: String((e && e.message) || e) });
+  }
+
+  // The port is the primary channel: it is connected to a worker that is, by
+  // construction, awake.
+  try {
+    if (!port) connectPort();
+    if (port) {
+      port.postMessage(Object.assign({ target: "worker", id }, msg));
+      note("posted over port", { type: msg.type });
+    } else {
+      note("no port available", { type: msg.type });
+    }
+  } catch (e) {
+    note("PORT POST THREW", { error: String((e && e.message) || e) });
+    port = null;
+  }
+
+  try {
+    const p = chrome.runtime.sendMessage(Object.assign({ target: "worker", id }, msg));
+    if (p && p.then) {
+      p.then(() => note("sent", { type: msg.type }))
+       .catch((e) => note("worker asleep", { error: String((e && e.message) || e) }));
+    }
+  } catch (e) {
+    note("SEND THREW", { error: String((e && e.message) || e) });
+  }
+}
+
+let tick = async function tick() {
   if (!cfg || !cfg.url) return;
   if (inFlight) { schedule(currentDelay); return; }
   inFlight = true;
@@ -152,7 +225,27 @@ async function tick() {
   schedule(currentDelay);
 }
 
+// A throw anywhere inside tick() would stop the chain dead -- no further polls,
+// no error, a watcher that reports "running" forever while doing nothing. The
+// scheduler is therefore never inside the part that can throw.
+const rawTick = tick;
+tick = function safeTick() {
+  try {
+    const r = rawTick();
+    if (r && r.catch) r.catch((e) => {
+      note("POLL THREW", { error: String((e && e.message) || e) });
+      inFlight = false;
+      schedule(currentDelay);
+    });
+  } catch (e) {
+    note("POLL THREW", { error: String((e && e.message) || e) });
+    inFlight = false;
+    schedule(currentDelay);
+  }
+};
+
 function start(next) {
+  connectPort();
   note("watcher configured", { url: next && next.url, name: next && next.name });
   cfg = next;
   currentDelay = (cfg && cfg.intervalMs) || DEFAULT_INTERVAL_MS;
@@ -163,6 +256,7 @@ function start(next) {
 }
 
 function stop() {
+  disconnectPort();
   clearTimeout(timer);
   timer = null;
   cfg = null;
