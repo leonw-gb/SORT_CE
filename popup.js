@@ -434,8 +434,11 @@ function showNoMatch(res, myName) {
     : `Connected. ${res.calls} calls returned.`);
 
   line(d.live
-    ? `${d.live} call${d.live === 1 ? " is" : "s are"} still open, none answered by "${myName}".`
+    ? `${d.live} call${d.live === 1 ? " is" : "s are"} open, none answered by "${myName}".`
     : `No call is open right now.`, true);
+  if (d.live && d.unnamed === d.live) {
+    line("Open calls the log cannot attribute to anyone are usually rows whose hangup never arrived.", true);
+  }
 
   if (d.liveSummary && d.liveSummary.length) {
     const pre = document.createElement("pre");

@@ -231,7 +231,16 @@ function describePayload(payload, myName, opts) {
 // (by sequence id, falling back to timestamp), and treat that as the call's
 // current state. A call whose last row is a hangup is over. Everything else
 // follows from the same rule as before.
-const MAX_CALL_AGE_MS = 6 * 60 * 60 * 1000;   // a call still "live" after six hours is a log artefact
+// How long an un-closed call stays believable. Six hours was far too generous:
+// a hotline call that never received its hangup row sat in the list all day and
+// read as "1 call is still open". Support calls do not run for an hour, and a
+// call still open after one is a log that lost its closing row.
+const MAX_CALL_AGE_MS = 60 * 60 * 1000;
+
+// An outbound call that only ever produced a newCall or answer row and no
+// hangup is the commonest orphan: the dialler drops the leg without telling
+// the log. Give those a much shorter benefit of the doubt.
+const MAX_ORPHAN_AGE_MS = 10 * 60 * 1000;
 
 function currentCalls(payload, opts) {
   const now = (opts && opts.now) || Date.now();
@@ -256,7 +265,11 @@ function currentCalls(payload, opts) {
     if (isEnded(n)) return false;
     // A newCall or answer that was never hung up, hours ago, is a log that
     // lost its closing row -- not a call anyone is still on.
-    if (n.at != null && now - n.at > MAX_CALL_AGE_MS) return false;
+    if (n.at == null) return true;
+    const age = now - n.at;
+    if (age > MAX_CALL_AGE_MS) return false;
+    // Nobody is on a call the log cannot attribute to anyone.
+    if (!n.user && !n.users.length && age > MAX_ORPHAN_AGE_MS) return false;
     return true;
   });
 }

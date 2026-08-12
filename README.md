@@ -468,3 +468,37 @@ nothing saying who recorded it.
 Removed the open question about the `Mission Control` shared accounts in the
 hotline roster: they are a leftover and are no longer logged into the hotline,
 so no call can be answered under a name that belongs to nobody.
+
+
+## v2.26.0 - Call recording never started (two scripts, one `report`)
+
+The watcher detected the call correctly every time. Its trail ended at
+"answered -> start recording" and nothing followed -- no success line, no
+failure line, no worker activity.
+
+The cause was a name collision, not a delivery problem. `callpoll.js` and
+`offscreen.js` are both plain `<script>` tags in offscreen.html, so they share
+ONE global scope, and both defined a top-level `function report(...)`.
+offscreen.js loads last, so its export-progress reporter replaced the
+watcher's. Every call trigger was therefore posted as an `exportProgress`
+message and discarded by a worker that had no listener for it. No error was
+raised anywhere: the call succeeded, it just went to the wrong place. Both
+logging lines inside the real `report` were in the dead function, which is why
+the trail simply stopped.
+
+Fixes:
+  * The two functions are named for what they do: `reportCallState` in
+    callpoll.js, `reportExportProgress` in offscreen.js.
+  * A build check fails on any duplicated top-level name across the scripts
+    that share the offscreen document's scope.
+
+Kept from the hunt, because each is a real weakness that hid this one:
+  * Triggers are delivered over a long-lived `chrome.runtime.connect` port, so
+    the service worker cannot be torn down while a call is being watched.
+    Storage and sendMessage remain as backups; a nonce de-duplicates.
+  * Every delivery step logs, including its own exceptions, and a throw inside
+    `tick()` can no longer kill the poll loop silently.
+  * The endpoint is an append-only EVENT LOG. Rows are collapsed by callId,
+    newest row wins, and a call whose last row is `hangup` is over.
+  * `userName` may hold a ringing roster as a JSON *string*; it is unpacked so
+    a group never reads as a person.

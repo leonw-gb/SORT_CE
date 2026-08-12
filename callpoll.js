@@ -60,6 +60,7 @@ function schedule(ms) {
 // and sent as a message second (the fast path when the worker is already up).
 // The worker de-duplicates on the nonce, so arriving twice is harmless.
 let nonce = 0;
+let storageWarned = false;
 
 // ---- keeping the worker awake ---------------------------------------------------
 // The root problem, finally: a decision is only useful if something is alive to
@@ -101,7 +102,7 @@ function disconnectPort() {
   port = null;
 }
 
-function report(msg) {
+function reportCallState(msg) {
   const id = `${Date.now()}_${++nonce}`;
 
   // Everything here is wrapped, because an exception thrown on the way OUT of
@@ -109,16 +110,22 @@ function report(msg) {
   // trail keeps its last line, and the recording simply never happens. The
   // previous build logged nothing at all at this point, which is only possible
   // if one of these calls threw synchronously.
+  // chrome.storage is not exposed in every offscreen-document context, so this
+  // is a best-effort backup, not a requirement. The port below is the channel
+  // that must work; a missing storage API is noted once and otherwise ignored.
   try {
-    const p = chrome.storage.local.set({ callTrigger: Object.assign({ id }, msg) });
-    if (p && p.then) {
-      p.then(() => note("queued", { type: msg.type }))
-       .catch((e) => note("QUEUE FAILED", { error: String((e && e.message) || e) }));
-    } else {
-      note("queued (callback API)", { type: msg.type });
+    if (chrome.storage && chrome.storage.local) {
+      const p = chrome.storage.local.set({ callTrigger: Object.assign({ id }, msg) });
+      if (p && p.then) {
+        p.then(() => note("queued", { type: msg.type }))
+         .catch((e) => note("queue failed", { error: String((e && e.message) || e) }));
+      }
+    } else if (!storageWarned) {
+      storageWarned = true;
+      note("no storage here, using the port");
     }
   } catch (e) {
-    note("QUEUE THREW", { error: String((e && e.message) || e) });
+    note("queue threw", { error: String((e && e.message) || e) });
   }
 
   // The port is the primary channel: it is connected to a worker that is, by
@@ -179,7 +186,7 @@ let tick = async function tick() {
     // Back off geometrically, capped. Report the trouble once, not every tick.
     if (fails >= BACKOFF_AFTER) {
       currentDelay = Math.min(MAX_INTERVAL_MS, (cfg.intervalMs || DEFAULT_INTERVAL_MS) * Math.pow(2, fails - BACKOFF_AFTER + 1));
-      if (fails === BACKOFF_AFTER) report({ type: "callPollError", error: lastError });
+      if (fails === BACKOFF_AFTER) reportCallState({ type: "callPollError", error: lastError });
     }
     schedule(currentDelay);
     return;
@@ -208,17 +215,17 @@ let tick = async function tick() {
       const age = mine && mine.at ? Date.now() - mine.at : Infinity;
       if (mine && age < FRESH_CALL_MS) {
         note("first poll, call is fresh -> start", { callId: mine.callId, ageMs: age });
-        report({ type: "callStateStarted", call: mine });
+        reportCallState({ type: "callStateStarted", call: mine });
       } else {
         note("first poll -> adopt (no picker)", { callId: mine ? mine.callId : null, ageMs: age });
-        report({ type: "callStateAdopted", call: mine || null });
+        reportCallState({ type: "callStateAdopted", call: mine || null });
       }
     } else if (mine) {
       note("answered -> start recording", { callId: mine.callId, event: mine.event });
-      report({ type: "callStateStarted", call: mine });
+      reportCallState({ type: "callStateStarted", call: mine });
     } else {
       note("call ended", { callId: prev.split("|")[0] });
-      report({ type: "callStateEnded", callId: prev.split("|")[0] });
+      reportCallState({ type: "callStateEnded", callId: prev.split("|")[0] });
     }
   }
 

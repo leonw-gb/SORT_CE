@@ -30,7 +30,12 @@ function getFrom(store, key) {
   }));
 }
 
-function report(stage, loaded, total) {
+// Named for what it reports. It used to be plain "report" -- and because this
+// file and callpoll.js are plain <script>s sharing ONE global scope in the
+// offscreen document, whichever loaded last silently replaced the other's.
+// offscreen.js loads last, so every call trigger the watcher "sent" was in
+// fact posted as an export-progress message and thrown away.
+function reportExportProgress(stage, loaded, total) {
   chrome.runtime.sendMessage({
     type: "exportProgress", stage, loaded, total
   }).catch(() => {});
@@ -67,12 +72,12 @@ async function buildBundle(recordingId) {
       : null
   };
 
-  report("hashing", 0, videoBlob ? videoBlob.size : 0);
+  reportExportProgress("hashing", 0, videoBlob ? videoBlob.size : 0);
   const blob = await SORTZ.build({
     manifest,
     session,
     videoBlob,
-    onProgress: (loaded, total) => report("hashing", loaded, total)
+    onProgress: (loaded, total) => reportExportProgress("hashing", loaded, total)
   });
 
   return { blob, filename: SORTZ.filenameFor(session, session.recorder) };
