@@ -46,22 +46,32 @@ function schedule(ms) {
   timer = setTimeout(tick, ms);
 }
 
-// The worker is asleep most of the time. sendMessage wakes it, but if it is
-// mid-teardown the send can reject -- and a swallowed rejection here is a
-// recording that never starts, with nothing anywhere to say why. Retry once,
-// and record the outcome either way.
+// Delivering a decision to the service worker is the step that was losing
+// recordings, so it goes through TWO channels.
+//
+// chrome.runtime.sendMessage alone is not enough: the worker is torn down
+// after ~30s idle, and a message from an offscreen document does not reliably
+// restart it. The send neither resolves nor rejects -- it simply disappears,
+// which is exactly what the trail showed: "answered -> start recording"
+// followed by nothing at all.
+//
+// A write to chrome.storage.local DOES wake a dormant worker, every time. So
+// the trigger is written to storage first (the delivery that must not fail)
+// and sent as a message second (the fast path when the worker is already up).
+// The worker de-duplicates on the nonce, so arriving twice is harmless.
+let nonce = 0;
+
 function report(msg) {
-  const full = Object.assign({ target: "worker" }, msg);
+  const id = `${Date.now()}_${++nonce}`;
+  const full = Object.assign({ target: "worker", id }, msg);
+
+  chrome.storage.local.set({ callTrigger: Object.assign({ id }, msg) })
+    .then(() => note("queued", { type: msg.type }))
+    .catch((e) => note("QUEUE FAILED", { type: msg.type, error: String((e && e.message) || e) }));
+
   chrome.runtime.sendMessage(full)
     .then(() => note("sent", { type: msg.type }))
-    .catch((e) => {
-      note("send failed, retrying", { type: msg.type, error: String((e && e.message) || e) });
-      setTimeout(() => {
-        chrome.runtime.sendMessage(full)
-          .then(() => note("sent on retry", { type: msg.type }))
-          .catch((e2) => note("SEND FAILED", { type: msg.type, error: String((e2 && e2.message) || e2) }));
-      }, 500);
-    });
+    .catch(() => note("worker asleep, storage will wake it", { type: msg.type }));
 }
 
 async function tick() {

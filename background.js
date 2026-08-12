@@ -535,7 +535,18 @@ async function openContinueWindow(minutes, reason) {
 }
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === POLL_KEEPALIVE_ALARM) { ensureCallPollerAlive(); return; }
+  if (alarm.name === POLL_KEEPALIVE_ALARM) {
+    // The minute alarm is also the safety net for a trigger that was written
+    // while the worker was down: check the queue on every tick, not only at
+    // worker start.
+    chrome.storage.local.get("callTrigger").then(({ callTrigger }) => {
+      if (callTrigger && Date.now() - Number(String(callTrigger.id).split("_")[0]) < 60000) {
+        consumeTrigger(callTrigger);
+      }
+    }).catch(() => {});
+    ensureCallPollerAlive();
+    return;
+  }
   if (alarm.name !== CONTINUE_ALARM) return;
   if (!activeSession) return;
   openContinueWindow(FIXED.continueMinutes, "timer");
@@ -806,6 +817,50 @@ async function handleCallStarted(call) {
   return res;
 }
 
+
+// ---- trigger intake --------------------------------------------------------------
+// The offscreen watcher writes its decision to chrome.storage.local as well as
+// sending it. A storage write WAKES a torn-down service worker; a message from
+// an offscreen document does not, which is how "answered -> start recording"
+// could be the last line in the log with no recording behind it.
+//
+// Both paths land here. The nonce makes the duplicate harmless: whichever
+// arrives first does the work, the second is dropped.
+let lastTriggerId = null;
+
+async function consumeTrigger(t) {
+  if (!t || !t.id || t.id === lastTriggerId) return;
+  lastTriggerId = t.id;
+  await trail("trigger picked up", { via: t._via || "storage", type: t.type });
+  if (t.type === "callStateStarted") {
+    await handleCallStarted(t.call || {});
+  } else if (t.type === "callStateEnded") {
+    await handleCallEnded(t.callId || null);
+  } else if (t.type === "callStateAdopted") {
+    if (t.call && activeSession) followedCallId = t.call.callId;
+  }
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes.callTrigger) return;
+  consumeTrigger(changes.callTrigger.newValue);
+});
+
+// A trigger written while the worker was down and gone by the time any event
+// woke it: check once on every worker start.
+(async () => {
+  try {
+    const { callTrigger } = await chrome.storage.local.get("callTrigger");
+    // Only recent triggers. An old one must not open a picker on a browser
+    // restart hours later.
+    if (callTrigger && Date.now() - Number(String(callTrigger.id).split("_")[0]) < 60000) {
+      consumeTrigger(callTrigger);
+    } else if (callTrigger) {
+      lastTriggerId = callTrigger.id;   // remember it so it is never replayed
+    }
+  } catch (e) { /* nothing queued */ }
+})();
+
 // Push the current settings at the poller. Called on install, on startup, and
 // whenever settings are saved, so a changed name or URL takes effect at once.
 async function syncCallPoller() {
@@ -890,11 +945,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Only fires on a CHANGE, so this is "I just answered", not "still on a
     // call". The poller has already checked the name.
     case "callStateStarted":
-      handleCallStarted(message.call || {}).then(() => sendResponse({ success: true }));
-      return true;
-
     case "callStateEnded":
-      handleCallEnded(message.callId || null).then(() => sendResponse({ success: true }));
+      // The storage write carries the same decision and the same nonce, so
+      // whichever path is faster wins and the other is a no-op.
+      consumeTrigger(Object.assign({ _via: "message" }, message,
+        { id: message.id || `msg_${message.callId || (message.call && message.call.callId)}_${message.type}` }))
+        .then(() => sendResponse({ success: true }));
       return true;
 
     // First poll after a reload: a call may already be running. Follow it so
