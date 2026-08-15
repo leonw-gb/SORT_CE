@@ -1107,6 +1107,17 @@ function describeControl(startEl) {
     if (composed) label = composed;
   }
 
+  // Icon-only buttons that act on a titled section (refresh/clear/add next to a
+  // card header): the glyph gives the verb, the header gives the object.
+  // "Refresh" alone is ambiguous when a page has several refreshable panels.
+  if (role === "button" && !label && icon && !tooltip) {
+    const verb = ICON_VERB_MAP[icon] || iconToVerb(icon);
+    if (verb) {
+      const sec = sectionTitleOf(control, verb);
+      if (sec) label = (verb + " " + sec).substring(0, 120);
+    }
+  }
+
   // Action-grid buttons inside a titled card (main page "Restart Pods" /
   // "Restart Nodes" grids): the card header carries the ACTION ("Restart
   // Pods") and the button carries the TARGET name ("Grp2", "CM", ...). Compose
@@ -1244,6 +1255,23 @@ function describeTextFieldControl(startEl) {
   const clearBtn = startEl.closest('[aria-label="Clear"], .q-field__focusable-action');
   const isClear = !!(clearBtn && field.contains(clearBtn) && !clearBtn.matches("input, textarea"));
 
+  // The clear affordance is a BUTTON acting on the section, not the field
+  // itself: it reads "Clear Current Schedule", parallel to "Refresh Current
+  // Schedule" next to it. Resolve it here (we already have the field) rather
+  // than in the generic button path, which cannot see past the <label>.
+  if (isClear) {
+    const sec = sectionTitleOf(field, "Clear");
+    return {
+      role: "button",
+      action: "clear",
+      icon: "cancel",
+      tooltip: null,
+      label: ("Clear" + (sec ? " " + sec : "")).substring(0, 120),
+      active: false,
+      quasarClasses: pickQuasarClasses(field)
+    };
+  }
+
   let name =
     (input.getAttribute("aria-label") || "").trim() ||
     (input.getAttribute("placeholder") || "").trim();
@@ -1262,8 +1290,8 @@ function describeTextFieldControl(startEl) {
 
   return {
     role: "text-field",
-    action: isClear ? "clear" : null,
-    icon: isClear ? "cancel" : null,
+    action: null,
+    icon: null,
     tooltip: null,
     label: label.substring(0, 120),
     active: document.activeElement === input,

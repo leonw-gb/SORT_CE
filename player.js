@@ -520,6 +520,17 @@ const PLAYER_ICON_VERBS = {
   folder: "Expand section", light_mode: "Light mode", dark_mode: "Dark mode"
 };
 
+
+// Composed labels read "Name (detail)". The NAME is the action; the detail is
+// context, so only the name is emphasised. Splits on the last balanced
+// parenthetical that ends the string.
+function boldLabel(label) {
+  const s = String(label == null ? "" : label);
+  const m = s.match(/^(.*?)\s*(\([^()]*\))$/);
+  if (!m || !m[1].trim()) return `<b>${esc(s)}</b>`;
+  return `<b>${esc(m[1].trim())}</b> ${esc(m[2])}`;
+}
+
 // One human-readable line { lead(html), sub(text) } per event.
 function describe(ev) {
   const d = ev.data || {};
@@ -638,7 +649,7 @@ function describe(ev) {
       const plainVal = (d.value != null && d.value !== "" && !d.masked) ? cleanLabel(d.value) : "";
       const val = (isTypingPlain && plainVal && plainVal !== label)
         ? ` \u2192 "${esc(plainVal)}"` : (isTypingPlain && d.masked ? " (masked)" : "");
-      return { lead: `${verb} <b>${esc(label)}</b>${val}`, sub, dbg: plainDbg };
+      return { lead: `${verb} ${boldLabel(label)}${val}`, sub, dbg: plainDbg };
     }
     case "key": {
       const combo = [ev.ctrl && "Ctrl", ev.meta && "Cmd", ev.alt && "Alt", ev.shift && "Shift", ev.key].filter(Boolean).join("+");
