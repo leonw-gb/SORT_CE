@@ -1007,6 +1007,13 @@ function describeControl(startEl) {
   const flt = describeFlutterControl(startEl);
   if (flt) return flt;
 
+  // Plain DOM text inputs (Quasar q-input / NiceGUI): the field's own label
+  // ("Search") plus the section it belongs to ("Current Schedule"). Resolved
+  // BEFORE the generic control walk, otherwise closest('.q-card') wins and the
+  // label becomes the whole card's concatenated textContent.
+  const tf = describeTextFieldControl(startEl);
+  if (tf) return tf;
+
   let control = null;
   let role = null;
   for (const { sel, role: r } of QUASAR_CONTROL_SELECTORS) {
@@ -1090,6 +1097,16 @@ function describeControl(startEl) {
     else if (!label) label = verb;
   }
 
+  // q-item rows that pair a NAME with a VALUE:
+  //   - status rows: bold title + caption line  -> "Offline - Idle (System is now off.)"
+  //   - detail grid cells: overline + value     -> "Change Time (08/15/26 15:16:33.682945)"
+  // Clock-only captions (15:16:33.682) are dropped: the timeline already has a
+  // timestamp column, and the wall clock makes the label unstable.
+  if (role === "menu-item" || role === "expansion-item" || role === "card") {
+    const composed = composeItemLabel(control);
+    if (composed) label = composed;
+  }
+
   // Action-grid buttons inside a titled card (main page "Restart Pods" /
   // "Restart Nodes" grids): the card header carries the ACTION ("Restart
   // Pods") and the button carries the TARGET name ("Grp2", "CM", ...). Compose
@@ -1120,6 +1137,129 @@ function describeControl(startEl) {
     active: isControlActive(control),
     quasarClasses: pickQuasarClasses(control)
   };
+}
+
+// ---- q-item label composition ------------------------------------------------
+// A Quasar list row carries its meaning in TWO parts: a name and a value.
+// Quasar marks the name with --overline (detail grids) or renders it as the
+// plain label with the value in a --caption line (status rows). Reading only
+// one part loses the point of the click; concatenating the row's raw
+// textContent glues in the wall clock. So: pick the name, pick the value(s),
+// join them as "Name (value)".
+const CLOCK_ONLY_RE = /^\d{1,2}:\d{2}(:\d{2})?(\.\d+)?$/;
+
+function composeItemLabel(control) {
+  if (!control || !control.querySelectorAll) return null;
+  const nodes = Array.from(control.querySelectorAll(".q-item__label"));
+  if (!nodes.length) return null;
+
+  let name = null;
+  const values = [];
+  for (const node of nodes) {
+    // Only labels belonging to the OUTERMOST row inside this control -- a
+    // nested q-item (e.g. a detail cell inside an expanded panel) describes a
+    // different click target and must not be folded into this label.
+    const ownRow = node.closest(".q-item");
+    const topRow = control.matches(".q-item") ? control : control.querySelector(".q-item");
+    if (topRow && ownRow && ownRow !== topRow) continue;
+    // Skip wrappers that only contain other labels.
+    if (node.querySelector(".q-item__label")) continue;
+
+    const cls = String(node.className || "");
+    const text = cleanLabelText(node).replace(/\s+/g, " ").trim();
+    if (!text || CLOCK_ONLY_RE.test(text)) continue;
+
+    if (/--overline|--header/.test(cls)) {
+      if (!name) name = text;
+    } else if (/--caption/.test(cls)) {
+      values.push(text);
+    } else if (!name) {
+      name = text;
+    } else {
+      values.push(text);
+    }
+  }
+
+  if (!name) return null;
+  const detail = values.join(" ").replace(/\s+/g, " ").trim();
+  const out = detail ? name + " (" + detail + ")" : name;
+  return out.length > 200 ? out.slice(0, 199) + "\u2026" : out;
+}
+
+// ---- Text fields --------------------------------------------------------------
+// A click or keystroke in a q-input must read as the field the operator sees:
+// its own label ("Search") qualified by the section it sits in ("Current
+// Schedule"). Without the section, every table filter on the page reads
+// "Search"; without the field label, the card's whole textContent leaks in.
+function describeTextFieldControl(startEl) {
+  if (!startEl || !startEl.closest) return null;
+
+  let input = null;
+  if (startEl.matches && startEl.matches("input, textarea")) input = startEl;
+  if (!input && startEl.closest("input, textarea")) input = startEl.closest("input, textarea");
+  if (!input) {
+    const field = startEl.closest(".q-field, .q-input, .q-textarea");
+    if (field) input = field.querySelector("input, textarea");
+  }
+  if (!input) return null;
+  const t = String(input.type || "text").toLowerCase();
+  if (["checkbox", "radio", "hidden", "submit", "button", "file"].includes(t)) return null;
+
+  const field = input.closest(".q-field, .q-input, .q-textarea, label") || input;
+
+  let name =
+    (input.getAttribute("aria-label") || "").trim() ||
+    (input.getAttribute("placeholder") || "").trim();
+  if (!name) {
+    const inner = field.querySelector(".q-field__label");
+    if (inner) name = cleanLabelText(inner);
+  }
+  if (!name && input.id) {
+    const forLabel = document.querySelector('label[for="' + CSS.escape(input.id) + '"]');
+    if (forLabel) name = cleanLabelText(forLabel);
+  }
+  if (!name) name = (input.getAttribute("name") || "").trim() || "Text field";
+
+  const section = sectionTitleOf(field, name);
+  const label = (section ? name + " " + section : name).replace(/\s+/g, " ").trim();
+
+  return {
+    role: "text-field",
+    icon: null,
+    tooltip: null,
+    label: label.substring(0, 120),
+    active: document.activeElement === input,
+    quasarClasses: pickQuasarClasses(field)
+  };
+}
+
+// Title of the card/table/section a control lives in. Used to qualify generic
+// field names ("Search" -> "Search Current Schedule").
+const SECTION_TITLE_SELECTORS = [
+  ".q-table__title",
+  ".q-item__label--header",
+  ".text-h4", ".text-h5", ".text-h6",
+  ".text-subtitle1", ".text-subtitle2",
+  "h1", "h2", "h3", "h4", "h5", "h6",
+  ".text-bold"
+];
+
+function sectionTitleOf(el, excludeText) {
+  let container = el && el.closest && el.closest(".q-card, .nicegui-card, .q-table__container, .q-table, section, [class*='card']");
+  let hops = 0;
+  while (container && hops++ < 4) {
+    for (const sel of SECTION_TITLE_SELECTORS) {
+      for (const node of container.querySelectorAll(sel)) {
+        if (node.contains(el) || el.contains(node)) continue;
+        const t = cleanLabelText(node).replace(/\s+/g, " ").trim();
+        if (!t || t.length < 2 || t.length > 40) continue;
+        if (excludeText && t.toLowerCase() === String(excludeText).toLowerCase()) continue;
+        return t;
+      }
+    }
+    container = container.parentElement && container.parentElement.closest(".q-card, .nicegui-card, .q-table__container, .q-table, section, [class*='card']");
+  }
+  return null;
 }
 
 // The icon <i class="q-icon ...">name</i> or [class~=material-icons] text/name.

@@ -501,8 +501,8 @@ function cleanLabel(raw, tag) {
   s = s.replace(/\s+/g, " ").trim();
   // A "label" longer than ~100 chars is not a label -- it is the concatenated
   // text of a whole view (Flutter root/container clicks). Reject it entirely.
-  if (s.length > 100) return "";
-  if (s.length > 80) s = s.slice(0, 80) + "\u2026";
+  if (s.length > 200) return "";
+  if (s.length > 160) s = s.slice(0, 160) + "\u2026";
   return s;
 }
 
@@ -570,6 +570,29 @@ function describe(ev) {
       // (c73, f_<uuid>) that means nothing to a reader.
       const c = d.control || null;
       const usefulId = (d.id && !/^c\d+$/.test(d.id) && !/^f_[0-9a-f-]{16,}$/i.test(d.id)) ? d.id : null;
+
+      // Plain-DOM text fields read like Flutter ones:
+      //   Clicked Text Field -> Search Current Schedule
+      //   Typed in Text Field -> Search Current Schedule -> "fail"
+      const isPlainTextField =
+        (c && c.role === "text-field") ||
+        ((d.tagName === "INPUT" || d.tagName === "TEXTAREA") &&
+          !["checkbox", "radio", "button", "submit"].includes(String(d.inputType || "").toLowerCase()));
+      if (isPlainTextField) {
+        const fieldName =
+          cleanLabel((c && c.label) || d.ariaLabel || d.placeholder || d.name) || "Text field";
+        const typing = ev.subtype === "input" || ev.subtype === "change";
+        const raw = (d.value != null && d.value !== "" && !d.masked) ? cleanLabel(d.value) : "";
+        const tail = typing
+          ? (d.masked ? " (masked)" : (raw ? ` \u2192 "${esc(raw)}"` : ""))
+          : "";
+        return {
+          lead: `${verb} <b>Text Field \u2192 ${esc(fieldName)}</b>${tail}`,
+          sub: shortUrl(d.url),
+          dbg: debugMode ? "plain DOM text field \u2014 labeled from field label + section title" : ""
+        };
+      }
+
       let label = cleanLabel(
         (c && c.tooltip) ||
         (c && c.label) ||
