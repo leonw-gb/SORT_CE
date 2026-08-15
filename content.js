@@ -1159,6 +1159,11 @@ function describeControl(startEl) {
 // join them as "Name (value)".
 const CLOCK_ONLY_RE = /^\d{1,2}:\d{2}(:\d{2})?(\.\d+)?$/;
 
+// Endpoint URLs (opc.tcp://robot-01.goodbytz:4840) identify a machine to an
+// integrator, not an action to an operator. A module row is named by its module
+// ("Cooking Robot"); the endpoint is noise in a timeline of what someone did.
+const CONNECTION_URL_RE = /(opc\.tcp|wss?|https?|tcp|udp|ftp|mqtt|modbus|amqp|coap):\/\//i;
+
 function composeItemLabel(control) {
   if (!control || !control.querySelectorAll) return null;
 
@@ -1174,8 +1179,14 @@ function composeItemLabel(control) {
   // The row that owns these labels is the DEEPEST .q-item containing all of
   // them. Quasar nests a real row inside the clickable wrapper, so the wrapper
   // itself is too coarse and any single label's parent is too narrow.
-  const row = deepestCommonItem(nodes, control);
-  const scoped = row ? nodes.filter((n) => row.contains(n)) : nodes;
+  // If no single row holds them all, the control spans SIBLING rows (a list of
+  // expansion panels). Falling back to "use every node" is what glued the next
+  // panel's header onto this one. Scope to the row owning the first visible
+  // label instead: that is the row the operator clicked.
+  const firstRow = nodes[0].closest(".q-item");
+  const row = deepestCommonItem(nodes, control) ||
+    (firstRow && (control.contains(firstRow) || firstRow === control) ? firstRow : null);
+  const scoped = row ? nodes.filter((n) => row.contains(n)) : [nodes[0]];
   if (!scoped.length) return null;
 
   let name = null;
@@ -1184,6 +1195,8 @@ function composeItemLabel(control) {
     const cls = String(node.className || "");
     const text = cleanLabelText(node).replace(/\s+/g, " ").trim();
     if (!text || CLOCK_ONLY_RE.test(text) || !/[A-Za-z0-9]/.test(text)) continue;
+    // Never let an endpoint become the parenthetical detail.
+    if (CONNECTION_URL_RE.test(text)) continue;
 
     if (/--overline|--header/.test(cls)) {
       if (!name) name = text;
