@@ -1307,52 +1307,70 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 // All three funnel through recordTabSwitch, which dedupes so one physical
 // switch never lands twice (a drag-out fires several of these at once).
 let lastActiveTabId = null;
+let switchSettleTimer = null;
 
-function recordTabSwitch(tabId, reason) {
-  if (!activeSession || tabId == null || tabId === chrome.tabs.TAB_ID_NONE) return;
-  if (tabId === lastActiveTabId) return; // same tab -> not a switch
-  lastActiveTabId = tabId;
+// Dragging a tab into its own window is ONE action to the operator, but Chrome
+// narrates it as a burst: the old window activates its remaining tab, focus
+// flicks between windows, and the moved tab activates in its new home. Logging
+// each signal produced the A -> B -> A stutter.
+//
+// So no signal is trusted on its own. Each one just restarts a short settle
+// timer; when the dust clears we ask Chrome ONE question -- which tab is
+// actually focused right now -- and record only that. A burst that ends where
+// it began records nothing, which is correct: the operator never left the tab.
+const SWITCH_SETTLE_MS = 250;
+
+function noteFocusChange(reason) {
+  if (!activeSession) return;
+  clearTimeout(switchSettleTimer);
+  switchSettleTimer = setTimeout(() => settleTabSwitch(reason), SWITCH_SETTLE_MS);
+}
+
+async function settleTabSwitch(reason) {
+  if (!activeSession) return;
+  let tab = null;
+  try {
+    // The focused window is the authority. If Chrome itself lost focus (the
+    // operator alt-tabbed away), fall back to the last focused window so a
+    // drag-out that ends outside Chrome still resolves.
+    const [focused] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    tab = focused || null;
+  } catch (e) { /* no window to query */ }
+  if (!tab || tab.id == null || tab.id === lastActiveTabId) return;
+
+  lastActiveTabId = tab.id;
   activeSession.events.push({
     type: "tabSwitch",
-    tabId,
+    tabId: tab.id,
     reason: reason || null,
     timestamp: Date.now(),
     relativeTime: Date.now() - activeSession.startTime
   });
 }
 
-chrome.tabs.onActivated.addListener((activeInfo) => {
-  recordTabSwitch(activeInfo.tabId, "tab-activated");
-});
+// Switch inside a window.
+chrome.tabs.onActivated.addListener(() => noteFocusChange("tab-activated"));
 
-// Focus moved to another browser window: the active tab THERE is now the one
-// being worked in. WINDOW_ID_NONE means focus left Chrome entirely -- not a
-// tab switch, so we ignore it and keep the current tab as active.
-chrome.windows.onFocusChanged.addListener(async (windowId) => {
-  if (!activeSession) return;
+// Switch between windows. WINDOW_ID_NONE means focus left Chrome entirely --
+// not a tab switch, and settling on it would misread the drag-out, so ignore.
+chrome.windows.onFocusChanged.addListener((windowId) => {
   if (windowId === chrome.windows.WINDOW_ID_NONE) return;
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, windowId });
-    if (tab) recordTabSwitch(tab.id, "window-focus");
-  } catch (e) { /* window vanished mid-query */ }
+  noteFocusChange("window-focus");
 });
 
-// A tab was dragged out into its own window. Chrome does not reliably fire
-// onActivated for it, but it is now the focused tab by definition.
-chrome.tabs.onAttached.addListener(async (tabId) => {
-  if (!activeSession) return;
-  try {
-    const tab = await chrome.tabs.get(tabId);
-    if (tab && tab.active) recordTabSwitch(tabId, "tab-moved-window");
-  } catch (e) { /* tab vanished */ }
-});
+// A tab was dragged into another window (including a brand-new one).
+chrome.tabs.onAttached.addListener(() => noteFocusChange("tab-moved-window"));
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   injectedTabs.delete(tabId);
   // Forget the memo if the active tab is gone, otherwise re-entering that tab
   // id later (or the dedupe comparing against a dead tab) silently drops the
   // next switch.
-  if (tabId === lastActiveTabId) lastActiveTabId = null;
+  if (tabId === lastActiveTabId) {
+    lastActiveTabId = null;
+    // Whatever gains focus next is a real switch, so let it settle.
+    noteFocusChange("tab-closed");
+  }
   if (!activeSession) return;
   activeSession.events.push({
     type: "tabClosed",
