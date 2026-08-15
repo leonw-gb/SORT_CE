@@ -326,6 +326,14 @@ async function startSession(options) {
     initializeTab(tab.id, sopSteps);
   }
 
+  // Seed the active-tab memo so the FIRST switch of the session is recorded
+  // relative to where the operator actually started, not against null.
+  lastActiveTabId = null;
+  try {
+    const [cur] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (cur) lastActiveTabId = cur.id;
+  } catch (e) { /* no focused window */ }
+
   updateBadge(true);
 
   // Always on: an unattended recording that nobody stops fills the disk and
@@ -1288,18 +1296,63 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   }
 });
 
-chrome.tabs.onActivated.addListener((activeInfo) => {
-  if (!activeSession) return;
+// ---- Which tab is the operator looking at? ----------------------------------
+// "Switched tab" is one question, but Chrome answers it with three different
+// events. tabs.onActivated only fires for a switch WITHIN a window, so moving
+// focus to a second window -- or dragging a tab out into one -- left the
+// timeline claiming the operator was still on the old tab.
+//   - tabs.onActivated      : switch inside the focused window
+//   - windows.onFocusChanged: switch between windows (the missing case)
+//   - tabs.onAttached       : a tab dragged into another window
+// All three funnel through recordTabSwitch, which dedupes so one physical
+// switch never lands twice (a drag-out fires several of these at once).
+let lastActiveTabId = null;
+
+function recordTabSwitch(tabId, reason) {
+  if (!activeSession || tabId == null || tabId === chrome.tabs.TAB_ID_NONE) return;
+  if (tabId === lastActiveTabId) return; // same tab -> not a switch
+  lastActiveTabId = tabId;
   activeSession.events.push({
     type: "tabSwitch",
-    tabId: activeInfo.tabId,
+    tabId,
+    reason: reason || null,
     timestamp: Date.now(),
     relativeTime: Date.now() - activeSession.startTime
   });
+}
+
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  recordTabSwitch(activeInfo.tabId, "tab-activated");
+});
+
+// Focus moved to another browser window: the active tab THERE is now the one
+// being worked in. WINDOW_ID_NONE means focus left Chrome entirely -- not a
+// tab switch, so we ignore it and keep the current tab as active.
+chrome.windows.onFocusChanged.addListener(async (windowId) => {
+  if (!activeSession) return;
+  if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, windowId });
+    if (tab) recordTabSwitch(tab.id, "window-focus");
+  } catch (e) { /* window vanished mid-query */ }
+});
+
+// A tab was dragged out into its own window. Chrome does not reliably fire
+// onActivated for it, but it is now the focused tab by definition.
+chrome.tabs.onAttached.addListener(async (tabId) => {
+  if (!activeSession) return;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab && tab.active) recordTabSwitch(tabId, "tab-moved-window");
+  } catch (e) { /* tab vanished */ }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   injectedTabs.delete(tabId);
+  // Forget the memo if the active tab is gone, otherwise re-entering that tab
+  // id later (or the dedupe comparing against a dead tab) silently drops the
+  // next switch.
+  if (tabId === lastActiveTabId) lastActiveTabId = null;
   if (!activeSession) return;
   activeSession.events.push({
     type: "tabClosed",
