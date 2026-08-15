@@ -1069,7 +1069,7 @@ function describeControl(startEl) {
     // carries a visible label ("Modules") next to the folder icon. Prefer
     // that label so the timeline reads 'Clicked Modules' (optionally with the
     // toggle state) instead of the bare aria-label verb "Expand"/"Collapse".
-    const visible = cleanLabelText(toggle);
+    const visible = composeItemLabel(toggle) || cleanLabelText(toggle);
     if (visible) {
       return {
         role: "expansion-item",
@@ -1150,24 +1150,29 @@ const CLOCK_ONLY_RE = /^\d{1,2}:\d{2}(:\d{2})?(\.\d+)?$/;
 
 function composeItemLabel(control) {
   if (!control || !control.querySelectorAll) return null;
-  const nodes = Array.from(control.querySelectorAll(".q-item__label"));
+
+  // Only labels the operator can actually SEE. A collapsed expansion panel keeps
+  // its detail grid in the DOM (display:none); folding that into the header's
+  // label is what produced the run-on status line.
+  const nodes = Array.from(control.querySelectorAll(".q-item__label")).filter((n) => {
+    if (n.querySelector(".q-item__label")) return false; // wrapper, not a leaf
+    return isVisibleNode(n);
+  });
   if (!nodes.length) return null;
+
+  // The row that owns these labels is the DEEPEST .q-item containing all of
+  // them. Quasar nests a real row inside the clickable wrapper, so the wrapper
+  // itself is too coarse and any single label's parent is too narrow.
+  const row = deepestCommonItem(nodes, control);
+  const scoped = row ? nodes.filter((n) => row.contains(n)) : nodes;
+  if (!scoped.length) return null;
 
   let name = null;
   const values = [];
-  for (const node of nodes) {
-    // Only labels belonging to the OUTERMOST row inside this control -- a
-    // nested q-item (e.g. a detail cell inside an expanded panel) describes a
-    // different click target and must not be folded into this label.
-    const ownRow = node.closest(".q-item");
-    const topRow = control.matches(".q-item") ? control : control.querySelector(".q-item");
-    if (topRow && ownRow && ownRow !== topRow) continue;
-    // Skip wrappers that only contain other labels.
-    if (node.querySelector(".q-item__label")) continue;
-
+  for (const node of scoped) {
     const cls = String(node.className || "");
     const text = cleanLabelText(node).replace(/\s+/g, " ").trim();
-    if (!text || CLOCK_ONLY_RE.test(text)) continue;
+    if (!text || CLOCK_ONLY_RE.test(text) || !/[A-Za-z0-9]/.test(text)) continue;
 
     if (/--overline|--header/.test(cls)) {
       if (!name) name = text;
@@ -1184,6 +1189,32 @@ function composeItemLabel(control) {
   const detail = values.join(" ").replace(/\s+/g, " ").trim();
   const out = detail ? name + " (" + detail + ")" : name;
   return out.length > 200 ? out.slice(0, 199) + "\u2026" : out;
+}
+
+// Rendered and not hidden. offsetParent alone is unreliable (position:fixed),
+// so fall back to a box check.
+function isVisibleNode(el) {
+  try {
+    if (el.closest("[style*='display: none'], [style*='display:none'], [hidden]")) return false;
+    if (el.offsetParent !== null) return true;
+    const r = el.getBoundingClientRect();
+    return !!(r.width || r.height);
+  } catch (e) { return true; }
+}
+
+// Deepest .q-item (within `limit`) that contains every given node.
+function deepestCommonItem(nodes, limit) {
+  let chain = [];
+  let el = nodes[0].closest(".q-item");
+  while (el && (!limit || limit.contains(el) || el === limit)) {
+    chain.push(el);
+    el = el.parentElement && el.parentElement.closest(".q-item");
+  }
+  // chain is innermost -> outermost; take the first that holds all nodes.
+  for (const cand of chain) {
+    if (nodes.every((n) => cand.contains(n))) return cand;
+  }
+  return null;
 }
 
 // ---- Text fields --------------------------------------------------------------
@@ -1207,6 +1238,12 @@ function describeTextFieldControl(startEl) {
 
   const field = input.closest(".q-field, .q-input, .q-textarea, label") || input;
 
+  // Quasar renders the clear affordance as an <i role="button" aria-label="Clear">
+  // in the field's append slot. It is a distinct ACTION on the field, not a
+  // click into it, so the timeline must say "Cleared", not "Clicked".
+  const clearBtn = startEl.closest('[aria-label="Clear"], .q-field__focusable-action');
+  const isClear = !!(clearBtn && field.contains(clearBtn) && !clearBtn.matches("input, textarea"));
+
   let name =
     (input.getAttribute("aria-label") || "").trim() ||
     (input.getAttribute("placeholder") || "").trim();
@@ -1225,7 +1262,8 @@ function describeTextFieldControl(startEl) {
 
   return {
     role: "text-field",
-    icon: null,
+    action: isClear ? "clear" : null,
+    icon: isClear ? "cancel" : null,
     tooltip: null,
     label: label.substring(0, 120),
     active: document.activeElement === input,

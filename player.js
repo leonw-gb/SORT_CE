@@ -581,13 +581,15 @@ function describe(ev) {
       if (isPlainTextField) {
         const fieldName =
           cleanLabel((c && c.label) || d.ariaLabel || d.placeholder || d.name) || "Text field";
-        const typing = ev.subtype === "input" || ev.subtype === "change";
+        const isClear = c && c.action === "clear";
+        const typing = !isClear && (ev.subtype === "input" || ev.subtype === "change");
         const raw = (d.value != null && d.value !== "" && !d.masked) ? cleanLabel(d.value) : "";
         const tail = typing
           ? (d.masked ? " (masked)" : (raw ? ` \u2192 "${esc(raw)}"` : ""))
           : "";
+        const fieldVerb = isClear ? "Cleared" : verb;
         return {
-          lead: `${verb} <b>Text Field \u2192 ${esc(fieldName)}</b>${tail}`,
+          lead: `${fieldVerb} <b>Text Field \u2192 ${esc(fieldName)}</b>${tail}`,
           sub: shortUrl(d.url),
           dbg: debugMode ? "plain DOM text field \u2014 labeled from field label + section title" : ""
         };
