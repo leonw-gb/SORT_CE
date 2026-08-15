@@ -1585,22 +1585,13 @@ function sanitizeFallbackText(raw) {
   // Re-join device slot codes that got over-split ("Slot A 5" -> "Slot A5").
   label = label.replace(/\b([A-Z])\s+(\d)\b/g, "$1$2");
 
-  // Compose: prefer "<name> (<url>)" when both exist; else whichever we have.
-  let out;
-  if (label && url) out = label + " (" + url + ")";
-  else out = url || label;
+  // Compose: the human-readable name wins. A connection URL (opc.tcp://...) is
+  // an implementation detail of the module row, not something the operator
+  // reads, so we only fall back to it when there is no name at all.
+  let out = label || url;
 
   if (!out) return null;
-  // Cap the NAME portion only; never truncate inside the URL parentheses.
-  if (out.length > 120) {
-    if (url && out.endsWith(")")) {
-      // keep the url; trim the name
-      const nameOnly = label.slice(0, Math.max(0, 120 - url.length - 4)).trim();
-      out = (nameOnly ? nameOnly + " " : "") + "(" + url + ")";
-    } else {
-      out = out.slice(0, 120).trim() + "\u2026";
-    }
-  }
+  if (out.length > 120) out = out.slice(0, 120).trim() + "\u2026";
   return out;
 }
 
