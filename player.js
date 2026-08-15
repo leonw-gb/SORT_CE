@@ -499,6 +499,23 @@ function cleanLabel(raw, tag) {
     return "";
   }
   s = s.replace(/\s+/g, " ").trim();
+  // Connection endpoints (opc.tcp://robot-03.goodbytz:4840) identify a machine
+  // to the network, not to the operator: the module row already shows its name.
+  // Strip them wherever they appear -- parenthesised, appended, or glued -- and
+  // only keep one if it is the ENTIRE label (nothing else to show).
+  const URL_RE = /(?:opc\.tcp|wss?|https?|tcp|udp|ftp|mqtt|modbus|amqp|coap):\/\/[^\s)]+/gi;
+  if (URL_RE.test(s)) {
+    URL_RE.lastIndex = 0;
+    const stripped = s
+      .replace(/\s*\(\s*(?:opc\.tcp|wss?|https?|tcp|udp|ftp|mqtt|modbus|amqp|coap):\/\/[^)]*\)/gi, "")
+      .replace(URL_RE, "")
+      .replace(/\s*\(\s*\)\s*/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/[\s\u2013\u2014\-\u00b7,:;]+$/, "")
+      .trim();
+    if (stripped) s = stripped;
+  }
   // A "label" longer than ~100 chars is not a label -- it is the concatenated
   // text of a whole view (Flutter root/container clicks). Reject it entirely.
   if (s.length > 200) return "";
