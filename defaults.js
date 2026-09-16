@@ -5,6 +5,9 @@
 // here rather than in the settings form removes five ways to typo a hostname
 // and makes a fresh install work with nothing but an API key.
 //
+// The call-state endpoint (Sipgate -> n8n -> SORT) lives here too. Operators
+// only enter their Sipgate name; the address and key are ours to manage.
+//
 // Loaded by the popup, the ticket dialog, and the service worker
 // (importScripts), so there is exactly one copy of each value.
 
@@ -24,7 +27,13 @@ const FIXED = {
   // dominated by Sipgate's push and n8n's hop -- and costs a request per second
   // per operator against the same small endpoint.
   callPollMinMs: 1000,
-  callPollDefaultMs: 2000
+  callPollDefaultMs: 2000,
+  // Call-state endpoint. Not shown in the settings form.
+  callTrigger: {
+    url: "https://j32j4jh324jh4j3j3j24cj34jc23j4cj234cj4hkj121212.replit.app/api/events",   // <-- your n8n call-state address
+    apiKey: "chk_e22cd3ce9641a41621b871511e21a4b931ee2fa9216e05a2",                       // <-- sent as X-API-Key
+    intervalMs: 2000
+  }
 };
 
 // Merge the stored config with the fixed values. The fixed values always win,
@@ -36,9 +45,13 @@ function withFixedSettings(config) {
     theme: c.theme === "light" ? "light" : "dark",
     downloadFolder: c.downloadFolder || "Recordings",
     upload: { url: FIXED.upload.url },
-    // The endpoint is the colleague's to host, so unlike the upload server and
-    // Odoo it is NOT fixed here: the URL and key are settings.
-    callTrigger: Object.assign({ url: "", apiKey: "", intervalMs: FIXED.callPollDefaultMs }, c.callTrigger),
+    // Fixed like the upload server and Odoo. Older stored configs that still
+    // carry a url/apiKey from the test phase are overwritten here.
+    callTrigger: {
+      url: FIXED.callTrigger.url,
+      apiKey: FIXED.callTrigger.apiKey,
+      intervalMs: Math.max(FIXED.callPollMinMs, Number(FIXED.callTrigger.intervalMs) || FIXED.callPollDefaultMs)
+    },
     odoo: Object.assign({}, c.odoo, {
       url: FIXED.odoo.url,
       db: FIXED.odoo.db,

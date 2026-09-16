@@ -269,11 +269,7 @@ function currentConfig() {
       .map((label, i) => ({ id: "step_" + (i + 1), label })),
     downloadFolder: val("downloadFolder") || "Recordings",
     sipgateName: val("sipgateName"),
-    callTrigger: {
-      url: val("callUrl"),
-      apiKey: val("callKey"),
-      intervalMs: Math.max(1000, (Number(val("callInterval")) || 2) * 1000)
-    },
+    // callTrigger (address, key, interval) is fixed in defaults.js.
     theme: currentTheme,
     odoo: { username: val("odooUser"), apiKey: val("odooKey") }
   });
@@ -371,29 +367,15 @@ function showCallResult(headline, res) {
     out.appendChild(f);
   }
 
-  // Addresses on the same server that DID answer JSON. Offering them as
-  // buttons is the fix itself, not a hint about it.
+  // The address is fixed in defaults.js, so a wrong path is a developer
+  // problem, not an operator one. Still list what the probe found so the
+  // report is useful when it is forwarded.
   if (res.candidates && res.candidates.length) {
     const c = document.createElement("div");
     c.style.marginTop = "6px";
-    c.textContent = res.candidates.length === 1
-      ? "This address on the same server answers JSON:"
-      : "These addresses on the same server answer JSON:";
+    c.textContent = "Addresses on the same server that answer JSON (report this to the SORT maintainer): " +
+      res.candidates.map((cand) => cand.url).join(", ");
     out.appendChild(c);
-    res.candidates.forEach((cand) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.textContent = `Use ${cand.url}`;
-      b.style.cssText =
-        "display:block; width:100%; text-align:left; margin-top:4px; padding:6px 8px; " +
-        "font-size:11px; font-family:inherit; cursor:pointer; border-radius:6px; " +
-        "border:1px solid var(--line2); background:var(--panel2); color:var(--txt);";
-      b.addEventListener("click", () => {
-        document.getElementById("callUrl").value = cand.url;
-        out.textContent = "Address updated. Save the settings, then test again.";
-      });
-      out.appendChild(b);
-    });
   }
 
   if (res.sample) {
@@ -488,7 +470,7 @@ function reportPollerHealth() {
       const typed = document.getElementById("sipgateName").value.trim();
       const w = document.createElement("div");
       w.style.marginTop = "4px";
-      w.textContent = `Watching as "${st.name || "(no name)"}" · ${st.url || "(no address)"}`;
+      w.textContent = `Watching as "${st.name || "(no name)"}"`;
       box.appendChild(w);
       if (typed && st.name && typed.toLowerCase() !== String(st.name).toLowerCase()) {
         const warn = document.createElement("div");
@@ -546,7 +528,7 @@ document.getElementById("testCall").addEventListener("click", async () => {
   const out = document.getElementById("callStatus");
   const cfg = currentConfig();
   if (!cfg.callTrigger.url) {
-    out.textContent = "Enter the call-state address first.";
+    out.textContent = "No call-state address is configured in this build.";
     return;
   }
   if (!cfg.sipgateName) {
@@ -567,7 +549,7 @@ document.getElementById("testCall").addEventListener("click", async () => {
     if (!res.success) {
       showCallResult(
         res.status === 401 || res.status === 403
-          ? `Rejected (HTTP ${res.status}). Check the API key.`
+          ? `Rejected (HTTP ${res.status}). The built-in API key was refused; tell the SORT maintainer.`
           : `The address answered HTTP ${res.status}.`,
         res);
       return;
@@ -605,10 +587,6 @@ function loadConfig() {
     document.getElementById("sipgateName").value = c.sipgateName || "";
     document.getElementById("odooUser").value = c.odoo?.username || "";
     document.getElementById("odooKey").value = c.odoo?.apiKey || "";
-    document.getElementById("callUrl").value = c.callTrigger?.url || "";
-    document.getElementById("callKey").value = c.callTrigger?.apiKey || "";
-    document.getElementById("callInterval").value =
-      Math.round((c.callTrigger?.intervalMs || 2000) / 1000);
     markTheme(c.theme);
   });
 }
