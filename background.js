@@ -197,14 +197,6 @@ async function deleteRecording(id) {
   });
 }
 
-// ---- Default SOP steps -------------------------------------------------------
-const DEFAULT_SOP_STEPS = [
-  { id: "observe",  label: "1 - Observe / reproduce" },
-  { id: "diagnose", label: "2 - Diagnose root cause" },
-  { id: "plan",     label: "3 - Apply fix" },
-  { id: "apply",    label: "4 - Verify resolved / close" }
-];
-
 // ---- Active session ----------------------------------------------------------
 // One shared session object across all tabs. null = not recording.
 let activeSession = null;
@@ -262,8 +254,6 @@ async function startSession(options) {
     };
   }
 
-  const sopSteps = (config.sopSteps && config.sopSteps.length) ? config.sopSteps : DEFAULT_SOP_STEPS;
-
   // Screen capture first: the operator picks a window BEFORE the clock starts,
   // so the video's zero point and the timeline's zero point stay aligned. If
   // they cancel the picker we still record the timeline.
@@ -278,7 +268,6 @@ async function startSession(options) {
     endTime: null,
     tabs: {},
     events: [],
-    sopSteps,
     // videoStartOffset: ms between the encoder's first frame and the session
     // clock's zero. The player subtracts it so a timeline click seeks to the
     // right frame even though the two clocks start microseconds apart.
@@ -323,7 +312,7 @@ async function startSession(options) {
       relativeTime: 0
     });
     injectedTabs.add(tab.id);
-    initializeTab(tab.id, sopSteps);
+    initializeTab(tab.id);
   }
 
   // Seed the active-tab memo so the FIRST switch of the session is recorded
@@ -379,8 +368,8 @@ function attachCallToSession(call) {
 // script is ORPHANED), programmatically re-inject the recorder files and retry.
 // Without this, a tab that was already open before the extension reload records
 // NOTHING until it is manually refreshed.
-async function initializeTab(tabId, sopSteps) {
-  const msg = { type: "initializeRecorder", recordingId: activeSession.id, sopSteps };
+async function initializeTab(tabId) {
+  const msg = { type: "initializeRecorder", recordingId: activeSession.id };
   try {
     await chrome.tabs.sendMessage(tabId, msg);
     return;
@@ -393,7 +382,6 @@ async function initializeTab(tabId, sopSteps) {
       world: "MAIN",
       files: ["ws-hook.js"]
     });
-    await chrome.scripting.insertCSS({ target: { tabId }, files: ["tagger.css"] });
     await chrome.scripting.executeScript({
       target: { tabId },
       files: ["content.js"]
@@ -434,7 +422,7 @@ async function stopSession(options) {
   clearContinueAlarm();
   closeContinueWindow();
 
-  // Tell every tab to remove the floating tagger and stop rrweb.
+  // Tell every tab to stop recording.
   const tabs = await chrome.tabs.query({});
   for (const tab of tabs) {
     chrome.tabs.sendMessage(tab.id, { type: "teardownRecorder" }).catch(() => {});
@@ -1158,20 +1146,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // The "!" badge is a standing complaint about a missing name; retire it
         // the moment one exists.
         if (message.config && (message.config.sipgateName || "").trim()) clearNameWarning();
-        // If recording, push new SOP steps to every tab's live tagger.
-        if (activeSession && message.config && message.config.sopSteps) {
-          activeSession.sopSteps = message.config.sopSteps.length
-            ? message.config.sopSteps
-            : DEFAULT_SOP_STEPS;
-          chrome.tabs.query({}, (tabs) => {
-            for (const tab of tabs) {
-              chrome.tabs.sendMessage(tab.id, {
-                type: "updateSopSteps",
-                sopSteps: activeSession.sopSteps
-              }).catch(() => {});
-            }
-          });
-        }
         // A changed name, URL or key must take effect now, not at next restart.
         syncCallPoller();
         sendResponse({ success: true });
@@ -1292,7 +1266,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   // restart rrweb and lose the running DOM stream.
   if (!injectedTabs.has(tabId)) {
     injectedTabs.add(tabId);
-    initializeTab(tabId, activeSession.sopSteps);
+    initializeTab(tabId);
   }
 });
 

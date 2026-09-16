@@ -10,7 +10,6 @@
       --accent: #E21A82;
       --c-click: #4aa3ff; --c-input: #35c48b; --c-key: #c792ea;
       --c-nav: #f2b155; --c-tab: #7dd3fc; --c-net: #8a94a6;
-      --c-sop: #E21A82; --c-note: #ffd166;
     }
     * { box-sizing: border-box; }
     /* One dial for the whole UI. Every size below is written at 100% and
@@ -71,22 +70,7 @@
     .btn:hover { color: var(--txt); border-color: var(--dim); }
     .btn.active { color: #fff; background: var(--accent); border-color: var(--accent); }
     #log { flex: 1; overflow-y: auto; padding: 8px 0 40px; min-height: 0; }
-    .step-group { margin: 0 0 6px; }
-    .step-head {
-      position: sticky; top: 0; z-index: 2;
-      background: linear-gradient(180deg, var(--bg) 72%, transparent);
-      padding: 12px 20px 8px; display: flex; align-items: center; gap: 10px; cursor: pointer;
-    }
-    .step-head .caret { color: var(--dim); font-size: 11px; width: 10px; transition: transform .12s; }
-    .step-group.collapsed .caret { transform: rotate(-90deg); }
-    .step-head .badge {
-      background: var(--accent); color: #fff; font-size: 10px; font-weight: 700;
-      padding: 2px 8px; border-radius: 4px; letter-spacing: .3px;
-    }
-    .step-head .title { font-size: 12px; font-weight: 600; color: var(--txt); }
-    .step-head .count { font-size: 11px; color: var(--dim); margin-left: auto; }
-    .step-body { padding: 0 20px; }
-    .step-group.collapsed .step-body { display: none; }
+    .log-body { padding: 0 20px; }
     .row {
       display: grid; grid-template-columns: 74px 22px 1fr auto;
       align-items: start; gap: 10px;
@@ -116,8 +100,6 @@
     .ico.nav { background: var(--c-nav); color: #2a1c00; }
     .ico.tab { background: var(--c-tab); color: #06283a; }
     .ico.net, .ico.ws { background: var(--c-net); color: #10151c; }
-    .ico.sop { background: var(--c-sop); }
-    .ico.note { background: var(--c-note); color: #3a2c00; }
     .ico.misc { background: #5b6472; }
     .row .body { font-size: 12.5px; min-width: 0; }
     .row .body .lead { color: var(--txt); }
@@ -234,7 +216,7 @@
     <div class="log-wrap">
       <div id="log"></div>
       <div class="follow-hint" id="followHint" role="status">
-        Following paused &middot; scroll back to the highlighted step to resume
+        Following paused &middot; scroll back to the highlighted row to resume
       </div>
     </div>
   </div>

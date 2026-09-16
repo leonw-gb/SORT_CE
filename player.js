@@ -1,7 +1,7 @@
 // player.js - Renders a recording as a clean, readable CORRELATED TIMELINE.
 // Lean mode: no visual DOM replay. Visuals come from an external screen
 // recorder; this page turns the captured action stream into a scannable log
-// grouped by SOP step, with type filters, search, tab lanes and pause markers.
+// with type filters, search, tab lanes and pause markers.
 
 const RECORDINGS_DB = "MultiTabRecorder";
 const RECORDINGS_STORE = "recordings";
@@ -63,7 +63,6 @@ const SOURCES = {
         },
         events: rec.events || [],
         tabs: rec.tabs || {},
-        sopSteps: rec.sopSteps || [],
         video: rec.video || null,
         // Deferred: the timeline must render even when the video is hundreds
         // of megabytes, so the blob is only fetched when the player asks.
@@ -388,11 +387,7 @@ function followPlayhead(row) {
   const logRect = log.getBoundingClientRect();
   const rowRect = row.getBoundingClientRect();
 
-  // The sticky SOP step header overlaps the top of the viewport, so a row is
-  // "visible" only below it -- otherwise following stops one row too early and
-  // the active row sits hidden under the header.
-  const head = log.querySelector(".step-head");
-  const headH = head ? head.getBoundingClientRect().height : 0;
+  const headH = 0;
 
   const topLimit = logRect.top + headH;
   const bottomLimit = logRect.bottom;
@@ -450,8 +445,6 @@ window.addEventListener("pagehide", () => {
 // Map an event to a display "kind" (drives icon, color, filtering).
 function kindOf(ev) {
   switch (ev.type) {
-    case "sopStep": return "sop";
-    case "sopNote": return "note";
     case "interaction":
       if (ev.subtype === "input" || ev.subtype === "change") return "input";
       return "click";
@@ -471,7 +464,7 @@ function kindOf(ev) {
 }
 const ICON = {
   click: "\u25C9", input: "\u270E", key: "\u2328", nav: "\u2192", tab: "\u25A2",
-  net: "\u21C5", ws: "\u21C6", sop: "\u2691", note: "\u270E", misc: "\u2022",
+  net: "\u21C5", ws: "\u21C6", misc: "\u2022",
   scroll: "\u2195", visibility: "\u25D1"
 };
 // Chip groups shown in the toolbar (kinds folded into one control).
@@ -552,8 +545,6 @@ function boldLabel(label) {
 function describe(ev) {
   const d = ev.data || {};
   switch (ev.type) {
-    case "sopStep": return { lead: `Step started: <b>${esc(ev.stepLabel || ev.stepId)}</b>`, sub: "" };
-    case "sopNote": return { lead: `Note`, sub: ev.note };
     case "interaction": {
       const verb = (ev.subtype === "input" || ev.subtype === "change") ? "Typed in" : "Clicked";
       // Flutter clicks: uniform "flt-semantic-node-ID -> LABEL" (resolved once
@@ -930,7 +921,6 @@ let searchQ = "";
 // Debug mode: show the technical semantics node id (flt-semantic-node-N) on
 // resolved clicks. Default OFF -> clicks read "Clicked node -> LABEL".
 let debugMode = false;
-const collapsedSteps = new Set();
 // Fold to tabs: collapse the detail rows so the log reads as the tab-switch
 // sequence only -- which app was in front, and for how long.
 let foldTabs = false;
@@ -940,10 +930,6 @@ const collapsedLanes = new Set();
 function passesFilters(ev) {
   const kind = kindOf(ev);
   // Chip filter (grouped)
-  // SOP steps and notes are structure, not a filterable event type: they have
-  // no chip, and grouping them under "Other" meant switching Other off erased
-  // the step headers the whole timeline is organised by.
-  if (kind === "sop" || kind === "note") return true;
   const group = CHIP_GROUPS.find((g) => g.kinds.includes(kind));
   if (group && hiddenKinds.has(group.k)) return false;
   if (!group && hiddenKinds.has("misc")) return false;
@@ -969,57 +955,25 @@ function render() {
   }
   if (foldTabs) { renderTabLanes(log, visible); return; }
 
-  // Group by SOP step, preserving order. Events before any step -> "Unassigned".
-  const groups = [];        // { key, label, items:[] }
-  const byKey = {};
-  visible.forEach((ev) => {
-    const key = ev.sopStep || "__none__";
-    const label = ev.type === "sopStep" ? null : null;
-    if (!byKey[key]) {
-      const g = { key, label: stepLabelFor(key), items: [] };
-      byKey[key] = g; groups.push(g);
-    }
-    byKey[key].items.push(ev);
-  });
-
+  // One flat list with pause dividers between consecutive actions.
   const frag = document.createDocumentFragment();
-  groups.forEach((g) => {
-    const section = document.createElement("div");
-    section.className = "step-group" + (collapsedSteps.has(g.key) ? " collapsed" : "");
-
-    const head = document.createElement("div");
-    head.className = "step-head";
-    head.innerHTML =
-      `<span class="caret">\u25BC</span>` +
-      (g.key === "__none__" ? `<span class="badge" style="background:#5b6472">\u2014</span>` : `<span class="badge">SOP</span>`) +
-      `<span class="title">${esc(g.label)}</span>` +
-      `<span class="count">${g.items.length} event${g.items.length === 1 ? "" : "s"}</span>`;
-    head.addEventListener("click", () => {
-      if (collapsedSteps.has(g.key)) collapsedSteps.delete(g.key); else collapsedSteps.add(g.key);
-      render();
-    });
-    section.appendChild(head);
-
-    const bodyEl = document.createElement("div");
-    bodyEl.className = "step-body";
-    let prevT = null;
-    g.items.forEach((ev) => {
-      // Pause divider between consecutive actions
-      if (prevT != null) {
-        const gap = ev.relativeTime - prevT;
-        if (gap >= PAUSE_MS) {
-          const gd = document.createElement("div");
-          gd.className = "gap" + (gap >= LONG_MS ? " long" : "");
-          gd.textContent = `\u23F1 ${fmtDur(gap)} pause`;
-          bodyEl.appendChild(gd);
-        }
+  const bodyEl = document.createElement("div");
+  bodyEl.className = "log-body";
+  let prevT = null;
+  visible.forEach((ev) => {
+    if (prevT != null) {
+      const gap = ev.relativeTime - prevT;
+      if (gap >= PAUSE_MS) {
+        const gd = document.createElement("div");
+        gd.className = "gap" + (gap >= LONG_MS ? " long" : "");
+        gd.textContent = `\u23F1 ${fmtDur(gap)} pause`;
+        bodyEl.appendChild(gd);
       }
-      prevT = ev.relativeTime;
-      bodyEl.appendChild(rowEl(ev));
-    });
-    section.appendChild(bodyEl);
-    frag.appendChild(section);
+    }
+    prevT = ev.relativeTime;
+    bodyEl.appendChild(rowEl(ev));
   });
+  frag.appendChild(bodyEl);
   log.appendChild(frag);
 }
 
@@ -1144,24 +1098,16 @@ function rowEl(ev) {
   return row;
 }
 
-function stepLabelFor(key) {
-  if (key === "__none__") return "Before first SOP step";
-  const st = (recording.sopSteps || []).find((s) => s.id === key);
-  return st ? st.label : key;
-}
-
 // ---- header + toolbar --------------------------------------------------------
 function renderStats() {
   const all = events;
   const clicks = all.filter((e) => kindOf(e) === "click").length;
   const inputs = all.filter((e) => kindOf(e) === "input").length;
-  const steps = all.filter((e) => e.type === "sopStep").length;
   const navs = all.filter((e) => kindOf(e) === "nav").length;
   const dur = all.length ? Math.max(...all.map((e) => e.relativeTime || 0)) : 0;
   const nTabs = Object.keys(recording.tabs || {}).length || 1;
   document.getElementById("stats").innerHTML =
     `<span>Duration <b>${fmtDur(dur)}</b></span>` +
-    `<span>SOP steps <b>${steps}</b></span>` +
     `<span>Tabs <b>${nTabs}</b></span>`;
 }
 
@@ -1206,10 +1152,7 @@ function buildCopyText() {
   lines.push(`# Session timeline — ${recording.id}`);
   lines.push(`Duration: ${fmtDur(Math.max(0, ...events.map((e) => e.relativeTime || 0)))}`);
   lines.push("");
-  let lastStep = "\u0000";
   events.filter(passesFilters).forEach((ev) => {
-    const key = ev.sopStep || "__none__";
-    if (key !== lastStep) { lines.push(`\n== ${stepLabelFor(key)} ==`); lastStep = key; }
     const dsc = describe(ev);
     const plain = (dsc.lead + (dsc.sub ? ` — ${dsc.sub}` : ""))
       .replace(/<[^>]+>/g, "");
@@ -1252,7 +1195,6 @@ async function init() {
     videoStartOffset: loaded.meta.videoStartOffset,
     events: loaded.events,
     tabs: loaded.tabs,
-    sopSteps: loaded.sopSteps,
     video: loaded.video
   };
   currentSource = loaded;

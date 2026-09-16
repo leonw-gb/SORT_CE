@@ -264,9 +264,6 @@ function currentConfig() {
   // Only what the operator actually controls. Server addresses, the database,
   // the ticket model and the 5-minute reminder are fixed in defaults.js.
   return withFixedSettings({
-    sopSteps: document.getElementById("sopSteps").value
-      .split("\n").map(l => l.trim()).filter(l => l.length)
-      .map((label, i) => ({ id: "step_" + (i + 1), label })),
     downloadFolder: val("downloadFolder") || "Recordings",
     sipgateName: val("sipgateName"),
     // callTrigger (address, key, interval) is fixed in defaults.js.
@@ -580,9 +577,6 @@ document.getElementById("testCall").addEventListener("click", async () => {
 function loadConfig() {
   chrome.runtime.sendMessage({ type: "getConfig" }, (config) => {
     const c = withFixedSettings(config);
-    if (c.sopSteps?.length) {
-      document.getElementById("sopSteps").value = c.sopSteps.map(s => s.label).join("\n");
-    }
     document.getElementById("downloadFolder").value = c.downloadFolder;
     document.getElementById("sipgateName").value = c.sipgateName || "";
     document.getElementById("odooUser").value = c.odoo?.username || "";

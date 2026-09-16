@@ -1,4 +1,4 @@
-// content.js - Captures user interactions + rrweb DOM recording + SOP step-tagger
+// content.js - Captures user interactions + rrweb DOM recording
 // Loaded with run_at=document_start. lib/rrweb.min.js is loaded before this file.
 
 // Guard: with programmatic re-injection (orphan recovery) this file can be
@@ -10,28 +10,10 @@ window.__mtrContentLoaded = true;
 
 let currentRecordingId = null;
 let rrwebStopFn = null;
-let taggerMounted = false;
-let currentSopStep = null;
-let currentSteps = null;
-
-// ---- SOP step definitions ----------------------------------------------------
-// Edit this list to match your real SOP. These are the default phases of a
-// generic troubleshooting workflow. The expert clicks one as they progress;
-// every event recorded after that click is labeled with the active step.
-const DEFAULT_SOP_STEPS = [
-  { id: "observe",  label: "1 - Observe / reproduce" },
-  { id: "diagnose", label: "2 - Diagnose root cause" },
-  { id: "plan",     label: "3 - Apply fix" },
-  { id: "apply",    label: "4 - Verify resolved / close" }
-];
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "initializeRecorder") {
-    initialize(message.recordingId, message.sopSteps);
-  } else if (message.type === "updateSopSteps") {
-    // Live update of the tagger's step list while recording
-    currentSteps = message.sopSteps && message.sopSteps.length ? message.sopSteps : DEFAULT_SOP_STEPS;
-    rebuildTaggerSteps();
+    initialize(message.recordingId);
   } else if (message.type === "teardownRecorder") {
     teardown();
   }
@@ -47,30 +29,22 @@ function teardown() {
   }
   // Tell the page-world WS hook to stop streaming frames.
   try { stopWsBridge(); } catch (e) {}
-  // Remove the floating tagger
-  const root = document.getElementById("sop-tagger-root");
-  if (root) root.remove();
-  taggerMounted = false;
   currentRecordingId = null;
-  currentSopStep = null;
 }
 
-function initialize(recordingId, sopSteps) {
-  currentSteps = sopSteps && sopSteps.length ? sopSteps : DEFAULT_SOP_STEPS;
+function initialize(recordingId) {
   if (currentRecordingId === recordingId) {
-    // Already recording this session (e.g. re-init after navigation) — just refresh steps.
-    rebuildTaggerSteps();
+    // Already recording this session (e.g. re-init after navigation).
     return;
   }
   currentRecordingId = recordingId;
 
   // LEAN MODE (v2.0): visual replay is handled by a separate screen recorder.
   // This extension now records ONLY the action/timeline data: clicks, inputs,
-  // navigation, tab switches, network/WS ground truth, SOP tags. No rrweb DOM
+  // navigation, tab switches, network/WS ground truth. No rrweb DOM
   // stream, no canvas/video frame capture -> small files, no replay bugs.
   startCustomRecorder(recordingId);
   whenBodyReady(() => {
-    mountTagger(recordingId, currentSteps);
     // Still needed: Flutter semantics gives real labels to click targets.
     enableFlutterSemantics();
     // Ground-truth widget map (Flutter pages): first dump after semantics builds.
@@ -272,7 +246,7 @@ function emit(recordingId, event) {
   chrome.runtime.sendMessage({
     type: "recordEvent",
     recordingId,
-    event: { ...event, sopStep: currentSopStep }
+    event
   }).catch(() => {});
 }
 
@@ -416,91 +390,6 @@ function startRRWeb(recordingId) {
   // the player's data format stay compatible. Visual capture = external screen
   // recorder.
   emit(recordingId, { type: "rrwebStatus", available: false, leanMode: true });
-}
-
-// ---- SOP step-tagger UI ------------------------------------------------------
-function buildStepButtons(recordingId, list, steps) {
-  list.innerHTML = "";
-  steps.forEach((step) => {
-    const btn = document.createElement("button");
-    btn.className = "sop-step-btn";
-    btn.textContent = step.label;
-    btn.dataset.stepId = step.id;
-    if (currentSopStep === step.id) btn.classList.add("active");
-    btn.addEventListener("click", () => {
-      currentSopStep = step.id;
-      list.querySelectorAll(".sop-step-btn").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
-      emit(recordingId, {
-        type: "sopStep",
-        stepId: step.id,
-        stepLabel: step.label,
-        url: window.location.href
-      });
-    });
-    list.appendChild(btn);
-  });
-}
-
-function rebuildTaggerSteps() {
-  const root = document.getElementById("sop-tagger-root");
-  if (!root || !currentSteps) return;
-  const list = root.querySelector(".sop-tagger-list");
-  if (list) buildStepButtons(currentRecordingId, list, currentSteps);
-}
-
-function mountTagger(recordingId, steps) {
-  if (taggerMounted) { rebuildTaggerSteps(); return; }
-  taggerMounted = true;
-
-  const root = document.createElement("div");
-  root.id = "sop-tagger-root";
-  root.className = "record-block record-ignore"; // keep out of rrweb capture
-
-  const header = document.createElement("div");
-  header.className = "sop-tagger-header";
-  header.innerHTML = '<span class="sop-rec-dot"></span><span>Recording &middot; SOP step</span>';
-
-  const collapseBtn = document.createElement("button");
-  collapseBtn.className = "sop-collapse";
-  collapseBtn.textContent = "_";
-  collapseBtn.title = "Collapse";
-  header.appendChild(collapseBtn);
-
-  const list = document.createElement("div");
-  list.className = "sop-tagger-list";
-  buildStepButtons(recordingId, list, steps);
-
-  const noteWrap = document.createElement("div");
-  noteWrap.className = "sop-note-wrap";
-  const note = document.createElement("input");
-  note.type = "text";
-  note.className = "sop-note record-ignore";
-  note.placeholder = "Add a note about this step (Enter)";
-  note.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && note.value.trim()) {
-      emit(recordingId, {
-        type: "sopNote",
-        stepId: currentSopStep,
-        note: note.value.trim(),
-        url: window.location.href
-      });
-      note.value = "";
-      note.placeholder = "Note saved \u2713";
-      setTimeout(() => (note.placeholder = "Add a note about this step (Enter)"), 1500);
-    }
-  });
-  noteWrap.appendChild(note);
-
-  collapseBtn.addEventListener("click", () => {
-    root.classList.toggle("collapsed");
-    collapseBtn.textContent = root.classList.contains("collapsed") ? "+" : "_";
-  });
-
-  root.appendChild(header);
-  root.appendChild(list);
-  root.appendChild(noteWrap);
-  document.body.appendChild(root);
 }
 
 // ---- Lightweight structured event capture ------------------------------------
@@ -1628,7 +1517,6 @@ function pickQuasarClasses(control) {
 function captureInteraction(recordingId, type, event) {
   let target = realTarget(event);
   if (!target || !target.tagName) return;
-  if (target.closest && target.closest("#sop-tagger-root")) return; // ignore tagger UI
 
   // Flutter: pointer events land on flutter-view / flt-glass-pane, not on the
   // invisible semantics nodes. Hit-test the click coordinates for the deepest
@@ -1669,7 +1557,7 @@ function captureInteraction(recordingId, type, event) {
     subtype: type,
     // One-line human-readable summary of the action, derived from the control's
     // semantic meaning. This is what makes the JSON directly usable for training
-    // and for SOP-compliance review (e.g. "click button: Stop in Manual mode").
+    // and for review (e.g. "click button: Stop in Manual mode").
     actionLabel: buildActionLabel(type, described, value),
     data: {
       ...described,
@@ -1854,7 +1742,6 @@ function buildActionLabel(type, described, value) {
 // Capture meaningful keystrokes (Enter, Tab, Escape, and shortcut combos).
 function captureKey(recordingId, event) {
   const target = realTarget(event);
-  if (target && target.closest && target.closest("#sop-tagger-root")) return;
   const isModifierCombo = event.ctrlKey || event.metaKey || event.altKey;
   const meaningful = ["Enter", "Tab", "Escape", "ArrowUp", "ArrowDown", "Delete", "Backspace"];
   if (!isModifierCombo && !meaningful.includes(event.key)) return; // skip plain typing (covered by input)
