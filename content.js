@@ -924,32 +924,6 @@ function describeControl(startEl) {
 
   // Skill name of the enclosing skill row (module skill lists): the row is a
   // .q-item whose "Name" caption section holds the bold skill label.
-  function skillNameFromRow(row) {
-    if (!row) return null;
-    for (const sec of row.querySelectorAll(".q-item__section")) {
-      const cap = sec.querySelector(".q-item__label--caption");
-      if (!cap || cap.textContent.trim().toLowerCase() !== "name") continue;
-      const val = sec.querySelector(".q-item__label:not(.q-item__label--caption)");
-      if (val) return val.textContent.trim();
-    }
-    const b = row.querySelector(".q-item__label.text-bold");
-    return b ? b.textContent.trim() : null;
-  }
-  function skillNameOf(el) {
-    if (!el || !el.closest) return null;
-    // Header row of the skill (Expand/Start buttons live here).
-    const own = skillNameFromRow(el.closest(".q-item"));
-    if (own) return own;
-    // Inside the EXPANDED body of the skill (tabs, detail grids): the body is
-    // a sibling of the header row, so walk up to the expansion item and read
-    // its header.
-    const exp = el.closest(".q-expansion-item");
-    if (exp) {
-      const hdr = exp.querySelector(".q-expansion-item__container > .q-item, .q-item");
-      return skillNameFromRow(hdr);
-    }
-    return null;
-  }
 
   // Expand/Collapse toggle inside a skill row: the avatar section carries
   // role="button" aria-label="Expand"/"Collapse". Label it with the skill it
@@ -1163,6 +1137,36 @@ function deepestCommonItem(nodes, limit) {
 // its own label ("Search") qualified by the section it sits in ("Current
 // Schedule"). Without the section, every table filter on the page reads
 // "Search"; without the field label, the card's whole textContent leaks in.
+// ---- Skill row helpers -------------------------------------------------------
+// Module skill lists render each skill as a q-expansion-item whose header row
+// carries the bold skill name; the expanded body holds tabs and input fields.
+// Used to qualify anything clicked inside a skill with the skill's name.
+function skillNameFromRow(row) {
+  if (!row) return null;
+  for (const sec of row.querySelectorAll(".q-item__section")) {
+    const cap = sec.querySelector(".q-item__label--caption");
+    if (!cap || cap.textContent.trim().toLowerCase() !== "name") continue;
+    const val = sec.querySelector(".q-item__label:not(.q-item__label--caption)");
+    if (val) return val.textContent.trim();
+  }
+  const b = row.querySelector(".q-item__label.text-bold");
+  return b ? b.textContent.trim() : null;
+}
+function skillNameOf(el) {
+  if (!el || !el.closest) return null;
+  // Header row of the skill (Expand/Start buttons live here).
+  const own = skillNameFromRow(el.closest(".q-item"));
+  if (own) return own;
+  // Inside the EXPANDED body of the skill (tabs, detail grids): the body is
+  // a sibling of the header row, so walk up to the expansion item and read
+  // its header.
+  const exp = el.closest(".q-expansion-item");
+  if (exp) {
+    const hdr = exp.querySelector(".q-expansion-item__container > .q-item, .q-item");
+    return skillNameFromRow(hdr);
+  }
+  return null;
+}
 function describeTextFieldControl(startEl) {
   if (!startEl || !startEl.closest) return null;
 
@@ -1213,10 +1217,28 @@ function describeTextFieldControl(startEl) {
     const forLabel = document.querySelector('label[for="' + CSS.escape(input.id) + '"]');
     if (forLabel) name = cleanLabelText(forLabel);
   }
+  // NiceGUI detail fields (skill Inputs tab, module settings): the field has no
+  // label of its own; its meaning is the CAPTION rendered just before it inside
+  // the same q-item section ("Duration", "Repetitions").
+  let captionName = null;
+  if (!name) {
+    const sec = field.closest(".q-item__section, .q-item");
+    const cap = sec && sec.querySelector(".q-item__label--caption");
+    if (cap && !cap.contains(input)) captionName = cleanLabelText(cap).replace(/\s+/g, " ").trim() || null;
+    if (captionName) name = captionName;
+  }
   if (!name) name = (input.getAttribute("name") || "").trim() || "Text field";
 
-  const section = sectionTitleOf(field, name);
-  const label = (section ? name + " " + section : name).replace(/\s+/g, " ").trim();
+  // Qualify with the owning skill when the field sits inside a skill's
+  // expanded body; otherwise with the section/card title as before.
+  const skill = skillNameOf(field);
+  let label;
+  if (skill) label = `${name} of "${skill}" skill`;
+  else {
+    const section = sectionTitleOf(field, name);
+    label = section ? name + " " + section : name;
+  }
+  label = label.replace(/\s+/g, " ").trim();
 
   return {
     role: "text-field",
