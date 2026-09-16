@@ -1215,7 +1215,16 @@ function describeTextFieldControl(startEl) {
   }
   if (!name && input.id) {
     const forLabel = document.querySelector('label[for="' + CSS.escape(input.id) + '"]');
-    if (forLabel) name = cleanLabelText(forLabel);
+    if (forLabel) {
+      // A Quasar <label> wraps the input AND its unit/validation UI. Those
+      // adornments are not the field name (e.g. suffix "g" must not hide Amount).
+      const labelOnly = forLabel.cloneNode(true);
+      labelOnly.querySelectorAll(
+        ".q-field__suffix, .q-field__prefix, .q-field__append, .q-field__prepend, " +
+        ".q-field__bottom, input, textarea, select, .q-icon, .q-tooltip"
+      ).forEach((node) => node.remove());
+      name = cleanLabelText(labelOnly).replace(/\s+/g, " ").trim();
+    }
   }
   // NiceGUI detail fields (skill Inputs tab, module settings): the field has no
   // label of its own; its meaning is the CAPTION rendered just before it inside
@@ -1229,14 +1238,21 @@ function describeTextFieldControl(startEl) {
   }
   if (!name) name = (input.getAttribute("name") || "").trim() || "Text field";
 
+  // Keep the displayed suffix separate from the semantic name. Never append
+  // it to the recorded input value, which must remain exactly what was typed.
+  const suffixNode = field.querySelector(".q-field__suffix");
+  const suffix = suffixNode ? cleanLabelText(suffixNode).replace(/\s+/g, " ").trim() : "";
+  const namedWithUnit = suffix && !name.endsWith(`(${suffix})`)
+    ? `${name} (${suffix})` : name;
+
   // Qualify with the owning skill when the field sits inside a skill's
   // expanded body; otherwise with the section/card title as before.
   const skill = skillNameOf(field);
   let label;
-  if (skill) label = `${name} of "${skill}" skill`;
+  if (skill) label = `${namedWithUnit} of "${skill}" skill`;
   else {
     const section = sectionTitleOf(field, name);
-    label = section ? name + " " + section : name;
+    label = section ? namedWithUnit + " " + section : namedWithUnit;
   }
   label = label.replace(/\s+/g, " ").trim();
 
