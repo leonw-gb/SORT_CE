@@ -903,17 +903,17 @@ function describeControl(startEl) {
   const tf = describeTextFieldControl(startEl);
   if (tf) return tf;
 
+  // Nearest ancestor wins, NOT the first selector in the list. A q-tab inside
+  // an expanded skill row must resolve to the tab ("Inputs"), not to the
+  // enclosing .q-item (the whole row's text, timestamps included).
   let control = null;
   let role = null;
   for (const { sel, role: r } of QUASAR_CONTROL_SELECTORS) {
     const match = startEl.closest(sel);
-    if (match) {
-      // Prefer the closest (most specific) control found.
-      if (!control || match.contains(control) === false) {
-        control = match;
-        role = r;
-      }
-      break;
+    if (!match) continue;
+    if (!control || control.contains(match)) {
+      control = match;
+      role = r;
     }
   }
   if (!control) return null;
@@ -924,8 +924,7 @@ function describeControl(startEl) {
 
   // Skill name of the enclosing skill row (module skill lists): the row is a
   // .q-item whose "Name" caption section holds the bold skill label.
-  function skillNameOf(el) {
-    const row = el.closest && el.closest(".q-item");
+  function skillNameFromRow(row) {
     if (!row) return null;
     for (const sec of row.querySelectorAll(".q-item__section")) {
       const cap = sec.querySelector(".q-item__label--caption");
@@ -935,6 +934,21 @@ function describeControl(startEl) {
     }
     const b = row.querySelector(".q-item__label.text-bold");
     return b ? b.textContent.trim() : null;
+  }
+  function skillNameOf(el) {
+    if (!el || !el.closest) return null;
+    // Header row of the skill (Expand/Start buttons live here).
+    const own = skillNameFromRow(el.closest(".q-item"));
+    if (own) return own;
+    // Inside the EXPANDED body of the skill (tabs, detail grids): the body is
+    // a sibling of the header row, so walk up to the expansion item and read
+    // its header.
+    const exp = el.closest(".q-expansion-item");
+    if (exp) {
+      const hdr = exp.querySelector(".q-expansion-item__container > .q-item, .q-item");
+      return skillNameFromRow(hdr);
+    }
+    return null;
   }
 
   // Expand/Collapse toggle inside a skill row: the avatar section carries
@@ -970,6 +984,20 @@ function describeControl(startEl) {
       };
     }
     label = verb;
+  }
+
+  // Quasar tabs (Inputs / Outputs / History / Details inside an expanded
+  // skill): the label is the .q-tab__label text alone, never the tab strip or
+  // the row around it. Add the owning skill so "Details" is not ambiguous
+  // when several skills are expanded.
+  if (role === "tab") {
+    const lbl = control.querySelector(".q-tab__label");
+    const tabText = (lbl ? cleanLabelText(lbl) : cleanLabelText(control)) || label;
+    const skillName = skillNameOf(control);
+    label = (tabText
+      ? (skillName ? `${tabText} tab of "${skillName}" skill` : `${tabText} tab`)
+      : label);
+    if (label) label = label.substring(0, 120);
   }
 
   // Skill action buttons (module skill rows): icon-only round q-btns with the

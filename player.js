@@ -453,6 +453,7 @@ function kindOf(ev) {
     case "historyChange": return "nav";
     case "tabSwitch":
     case "tabEntered":
+    case "tabsOpenAtStart":
     case "tabClosed": return "tab";
     case "networkRequest": return "net";
     case "wsFrame":
@@ -667,6 +668,11 @@ function describe(ev) {
     case "historyChange": return { lead: `Route change <span style="color:var(--dim)">(${esc(ev.method)})</span>`, sub: shortUrl(ev.url) };
     case "tabSwitch": return { lead: `Switched to ${esc(tabName(ev.tabId))}`, sub: "" };
     case "tabEntered": return { lead: `Tab opened`, sub: ev.title || shortUrl(ev.url) };
+    case "tabsOpenAtStart": return {
+      lead: `<b>${ev.tabs.length}</b> tabs already open when recording started`,
+      sub: "",
+      list: ev.tabs.map(startupTabLabel)
+    };
     case "tabClosed": return { lead: `${esc(tabName(ev.tabId))} closed`, sub: "" };
     case "networkRequest": return { lead: `<b>${esc(ev.method)}</b> request`, sub: shortUrl(ev.url) };
     case "semanticsTree": {
@@ -687,12 +693,31 @@ function describe(ev) {
 // resolves the node id (captured semanticsId, else rect hit-test of the click
 // coordinates against the tree valid at that moment) and the best label for
 // that id (tree label preferred over whatever the live capture grabbed).
+// Tabs that ever produced a semantics tree or a Flutter-tagged click are
+// Flutter apps; everything else is Quasar/NiceGUI/plain DOM. Computed once per
+// resolve pass, consulted by isFlutterClickCandidate: a bare <span> click is
+// only a Flutter candidate INSIDE a Flutter tab. Before this, a span click on
+// the Scheduler (Quasar) tab was hit-tested against the GUI tab's tree and
+// picked up whatever Flutter widget shared those coordinates.
+let flutterTabs = new Set();
+function computeFlutterTabs(evs) {
+  const s = new Set();
+  evs.forEach((e) => {
+    if (e.type === "semanticsTree") { s.add(e.tabId); return; }
+    if (e.type !== "interaction") return;
+    const d = e.data || {};
+    const tag = String(d.tagName || "");
+    if (d.semanticsId || /^(FLT-|FLUTTER-)/.test(tag)) s.add(e.tabId);
+  });
+  return s;
+}
 function isFlutterClickCandidate(ev) {
   if (ev.type !== "interaction") return false;
   const d = ev.data || {};
   if (d.semanticsId) return true;
   const tag = String(d.tagName || "");
-  return /^(FLT-|FLUTTER-)/.test(tag) || tag === "SPAN";
+  if (/^(FLT-|FLUTTER-)/.test(tag)) return true;
+  return tag === "SPAN" && flutterTabs.has(ev.tabId);
 }
 // Group nodes (table rows etc.) carry multi-line labels: "NAME\nAUTHOR\nSTATUS".
 // Usually the first line is the entity name. BUT some cards prefix a short
@@ -742,24 +767,34 @@ function hitTestTree(nodes, x, y) {
   return best;
 }
 function resolveFlutterClicks(evs) {
-  // Global id -> best label map across ALL tree snapshots (Flutter node ids
-  // are monotonically assigned, so collisions across routes don't occur).
-  const labelById = {};
-  const roleById = {};
+  flutterTabs = computeFlutterTabs(evs);
+  // id -> best label map PER TAB. Node ids are only unique within one Flutter
+  // instance; two GUI tabs both have a flt-semantic-node-12.
+  const labelByTab = {};   // tabId -> { id: label }
+  const roleByTab = {};    // tabId -> { id: role }
+  const treesByTab = {};   // tabId -> [semanticsTree events, time order]
   evs.forEach((e) => {
     if (e.type !== "semanticsTree") return;
+    const k = e.tabId;
+    labelByTab[k] = labelByTab[k] || {};
+    roleByTab[k] = roleByTab[k] || {};
+    treesByTab[k] = treesByTab[k] || [];
+    treesByTab[k].push(e);
     (e.nodes || []).forEach((n) => {
       if (!n.id) return;
-      if (n.label) labelById[n.id] = n.label;
-      if (n.role) roleById[n.id] = n.role;
+      if (n.label) labelByTab[k][n.id] = n.label;
+      if (n.role) roleByTab[k][n.id] = n.role;
     });
   });
-  // Walk in time order keeping the tree that was on screen at each click.
-  let currentTree = null;
-  const trees = evs.filter((e) => e.type === "semanticsTree");
+  // Walk in time order keeping, per tab, the tree that was on screen there.
+  const currentTreeByTab = {};
   evs.forEach((ev) => {
-    if (ev.type === "semanticsTree") { currentTree = ev; return; }
+    if (ev.type === "semanticsTree") { currentTreeByTab[ev.tabId] = ev; return; }
     if (!isFlutterClickCandidate(ev)) return;
+    const labelById = labelByTab[ev.tabId] || {};
+    const roleById = roleByTab[ev.tabId] || {};
+    const trees = treesByTab[ev.tabId] || [];
+    const currentTree = currentTreeByTab[ev.tabId] || null;
     const d = ev.data || {};
     let id = d.semanticsId || null;
     let hit = null;
@@ -897,6 +932,41 @@ function resolveFlutterClicks(evs) {
   }
 }
 
+// At session start the worker emits one tabEntered per already-open tab, all
+// at relativeTime 0. Seven identical "Tab opened" rows before the first real
+// action bury the start of the session, so fold that burst into a single
+// synthetic event carrying the list. Tabs opened LATER stay individual rows:
+// those are actions the operator took.
+const STARTUP_BURST_MS = 500;
+function foldStartupTabs(evs) {
+  const burst = evs.filter((e) => e.type === "tabEntered" && (e.relativeTime || 0) <= STARTUP_BURST_MS);
+  if (burst.length < 2) return evs;
+  const seen = new Set();
+  const tabs = [];
+  burst.forEach((e) => {
+    if (seen.has(e.tabId)) return;
+    seen.add(e.tabId);
+    tabs.push({ tabId: e.tabId, title: e.title || "", url: e.url || "" });
+  });
+  const folded = {
+    type: "tabsOpenAtStart",
+    tabs,
+    tabId: null,
+    timestamp: burst[0].timestamp,
+    relativeTime: 0
+  };
+  const rest = evs.filter((e) => !burst.includes(e));
+  return [folded].concat(rest);
+}
+// Readable name of one entry in that list: the app name derived from the URL
+// when we know the site, else the page title, else the path.
+function startupTabLabel(t) {
+  const known = tabNameFromUrl(t.url);
+  const title = (t.title || "").trim();
+  if (known && title && title.toLowerCase() !== known.toLowerCase()) return `${known} \u2014 ${title}`;
+  return known || title || shortUrl(t.url) || `tab ${t.tabId}`;
+}
+
 // Normalize a URL to its path (ignore hash/query jitter) for title lookup.
 function normUrl(u) {
   try { return new URL(u).pathname; } catch (e) { return u || ""; }
@@ -983,6 +1053,14 @@ function render() {
 // lane heads alone read as the session's switch sequence.
 function renderTabLanes(log, visible) {
   const lanes = [];
+  const summary = visible.find((e) => e.type === "tabsOpenAtStart");
+  if (summary) {
+    const wrap = document.createElement("div");
+    wrap.className = "log-body";
+    wrap.appendChild(rowEl(summary));
+    log.appendChild(wrap);
+    visible = visible.filter((e) => e !== summary);
+  }
   visible.forEach((ev) => {
     const last = lanes[lanes.length - 1];
     if (last && String(last.tabId) === String(ev.tabId)) last.items.push(ev);
@@ -1092,6 +1170,8 @@ function rowEl(ev) {
     `<span class="ico ${kind}">${ICON[kind] || "\u2022"}</span>` +
     `<span class="body"><span class="lead">${dsc.lead}${tabPill}</span>` +
     (dsc.sub ? `<span class="sub">${esc(dsc.sub)}</span>` : "") +
+    (dsc.list && dsc.list.length
+      ? `<ul class="row-list">${dsc.list.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : "") +
     (dsc.dbg ? `<span class="dbg">${esc(dsc.dbg)}</span>` : "") +
     `</span>` +
     `<span class="meta">${esc(kind)}</span>`;
@@ -1157,6 +1237,7 @@ function buildCopyText() {
     const plain = (dsc.lead + (dsc.sub ? ` — ${dsc.sub}` : ""))
       .replace(/<[^>]+>/g, "");
     lines.push(`[${fmtTime(ev.relativeTime || 0)}] ${plain}`);
+    if (dsc.list) dsc.list.forEach((x) => lines.push(`    - ${x}`));
     if (dsc.dbg) lines.push(`    [why] ${dsc.dbg}`);
   });
   return lines.join("\n");
@@ -1206,6 +1287,8 @@ async function init() {
 
   // Resolve every Flutter click to its semantics node id + ground-truth label.
   resolveFlutterClicks(events);
+  // One row for "these tabs were already open", not one per tab.
+  events = foldStartupTabs(events);
 
   CHIP_GROUPS.forEach((g) => {
     if (!DEFAULT_VISIBLE.has(g.k)) hiddenKinds.add(g.k);
