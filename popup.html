@@ -378,9 +378,21 @@
       <div class="help-text" id="callStatus" role="status"></div>
     </fieldset>
 
+    <fieldset>
+      <legend>Support</legend>
+      <div class="help-text">Diagnostic logs stay on this computer: up to 7 days, 5 MiB of log data or 5,000 entries, whichever limit is reached first. They do not include recording contents, typed values or credentials.</div>
+      <button class="btn btn-secondary" id="exportSupportLogs" type="button">Export support logs</button>
+      <div class="help-text" id="supportBuild"></div>
+      <div class="help-text" id="supportStatus" role="status" aria-live="polite"></div>
+      <div class="help-text">Creates a local JSON file with release/build fingerprints and diagnostic events. Nothing is uploaded automatically.</div>
+    </fieldset>
+
     <button class="btn btn-primary" id="saveConfig">Save settings</button>
   </div>
 
+  <script src="build-info.js"></script>
+  <script src="diagnostics-core.js"></script>
+  <script src="diagnostics.js"></script>
   <script src="defaults.js"></script>
   <script src="theme.js"></script>
   <script src="odoo.js"></script>

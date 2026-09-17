@@ -10,7 +10,10 @@
      It also polls the call-state endpoint: the worker is torn down after ~30s
      idle and chrome.alarms cannot fire faster than once a minute, so neither
      can notice an answered call within a couple of seconds. This document can. -->
-<script src="sortz.js"></script>
+<script src="build-info.js"></script>
+  <script src="diagnostics-core.js"></script>
+  <script src="diagnostics.js"></script>
+  <script src="sortz.js"></script>
 <script src="callmatch.js"></script>
 <script src="callpoll.js"></script>
 <script src="offscreen.js"></script>

@@ -284,10 +284,12 @@ async function loadVideo() {
   try {
     rec = currentSource ? await currentSource.getVideo() : await loadVideoBlob(recording.id);
   } catch (e) {
+    void SortDiagnostics.error("player.video", e);
     rec = null;
   }
 
   if (!rec || !rec.blob) {
+    void SortDiagnostics.emit("player.video", "unavailable");
     pane.classList.add("on");
     // Two very different failures used to share one sentence. An imported
     // session whose video did not survive the import is not the same thing as
@@ -304,6 +306,8 @@ async function loadVideo() {
   // holding the whole file in memory, which is what makes 30+ minute
   // recordings play at all.
   videoObjectUrl = URL.createObjectURL(rec.blob);
+  videoEl.addEventListener("error", () => { void SortDiagnostics.emit("player.video", "failed"); });
+  videoEl.addEventListener("loadedmetadata", () => { void SortDiagnostics.emit("player.video", "ok"); }, {once: true});
   videoEl.src = videoObjectUrl;
   pane.classList.add("on");
   videoReady = true;
@@ -1257,8 +1261,11 @@ async function init() {
 
   let loaded;
   try {
+    void SortDiagnostics.emit("player.load", "started");
     loaded = await source.load(id);
+    void SortDiagnostics.emit("player.load", loaded ? "ok" : "unavailable");
   } catch (e) {
+    void SortDiagnostics.error("player.load", e);
     log.innerHTML = `<div id="empty">Could not load recording: ${esc(e.message || e)}</div>`;
     return;
   }

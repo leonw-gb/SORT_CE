@@ -641,3 +641,18 @@ chrome.runtime.sendMessage({ type: "consumeNameWarning" }, (res) => {
   showSettingsTab();
   flagNameField("Add your name to start recording. Recordings are shared under it.");
 });
+
+// No dependency on settings validation: support export works before setup.
+document.getElementById("supportBuild").textContent = `SORT ${SORT_BUILD_INFO.version} / build ${SORT_BUILD_INFO.packageBuild.slice(0, 12)}`;
+document.getElementById("exportSupportLogs").addEventListener("click", async () => {
+  const button = document.getElementById("exportSupportLogs"), status = document.getElementById("supportStatus");
+  button.disabled = true;
+  status.textContent = "Preparing support logs. The download will continue if you close this popup.";
+  try {
+    const result = await chrome.runtime.sendMessage({target: "diagnostics", type: "export"});
+    if (!result || !result.success) throw new Error("Support export failed");
+    status.textContent = "Download requested. Check Chrome Downloads for the support JSON file before sharing it.";
+  } catch (_) {
+    status.textContent = "Could not export support logs. Retry; if this continues, check SORT's errors in chrome://extensions.";
+  } finally { button.disabled = false; }
+});

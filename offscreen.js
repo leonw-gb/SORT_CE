@@ -86,6 +86,22 @@ async function buildBundle(recordingId) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target !== "offscreen") return false;
 
+  if (message.type === "supportBlob") {
+    if (sender.id !== chrome.runtime.id || sender.tab) return false;
+    try {
+      const text = JSON.stringify(message.report, null, 2);
+      if (!text || text.length > 16 * 1024 * 1024) throw new Error("Support report too large");
+      const url = URL.createObjectURL(new Blob([text], {type: "application/json"}));
+      // Safety net for downloads interrupted by a browser restart or worker crash.
+      setTimeout(() => URL.revokeObjectURL(url), 10 * 60 * 1000);
+      sendResponse({success: true, url});
+    } catch (e) {
+      void SortDiagnostics.error("support.export", e);
+      sendResponse({success: false});
+    }
+    return false;
+  }
+
   if (message.type === "buildBundle") {
     buildBundle(message.id)
       .then(({ blob, filename }) => {
@@ -106,3 +122,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return false;
 });
+
+// Diagnostics wrappers preserve return values and thrown errors; arguments are never logged.
+buildBundle = SortDiagnostics.trace("bundle.build", buildBundle);

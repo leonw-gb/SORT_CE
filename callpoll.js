@@ -172,9 +172,10 @@ let tick = async function tick() {
     const res = await fetch(cfg.url, { method: "GET", headers, signal: ctl.signal, cache: "no-store" });
     clearTimeout(killer);
 
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), {status: res.status});
     payload = await res.json();
 
+    if (fails) void SortDiagnostics.emit("poll.connection", "recovered", {failures: fails});
     fails = 0;
     lastError = null;
     lastOkAt = Date.now();
@@ -182,6 +183,7 @@ let tick = async function tick() {
   } catch (e) {
     inFlight = false;
     fails += 1;
+    if (fails === 1) void SortDiagnostics.error("poll.connection", e);
     lastError = (e && e.name === "AbortError") ? "timed out" : String((e && e.message) || e);
     // Back off geometrically, capped. Report the trouble once, not every tick.
     if (fails >= BACKOFF_AFTER) {
@@ -196,7 +198,10 @@ let tick = async function tick() {
   // The whole decision, in one call.
   const mine = findMyCall(payload, cfg.name);
   const sig = callSignature(mine);
-  if (sig !== lastSig) note("state changed", { from: lastSig, to: sig });
+  if (sig !== lastSig) {
+    void SortDiagnostics.emit("poll.trigger", "changed");
+    note("state changed", { from: lastSig, to: sig });
+  }
 
   if (sig !== lastSig) {
     const prev = lastSig;
@@ -240,11 +245,13 @@ tick = function safeTick() {
   try {
     const r = rawTick();
     if (r && r.catch) r.catch((e) => {
-      note("POLL THREW", { error: String((e && e.message) || e) });
+      void SortDiagnostics.error("poll.connection", e);
+    note("POLL THREW", { error: String((e && e.message) || e) });
       inFlight = false;
       schedule(currentDelay);
     });
   } catch (e) {
+    void SortDiagnostics.error("poll.connection", e);
     note("POLL THREW", { error: String((e && e.message) || e) });
     inFlight = false;
     schedule(currentDelay);
@@ -255,6 +262,7 @@ function start(next) {
   connectPort();
   note("watcher configured", { url: next && next.url, name: next && next.name });
   cfg = next;
+  void SortDiagnostics.emit("poll.configure", "ok", {configured: !!(cfg && cfg.url && cfg.name), intervalMs: Number(cfg && cfg.intervalMs) || DEFAULT_INTERVAL_MS});
   currentDelay = (cfg && cfg.intervalMs) || DEFAULT_INTERVAL_MS;
   fails = 0;
   lastSig = null;     // force a silent re-adopt on the next poll
@@ -263,6 +271,7 @@ function start(next) {
 }
 
 function stop() {
+  if (cfg) void SortDiagnostics.emit("poll.stop", "ok");
   disconnectPort();
   clearTimeout(timer);
   timer = null;
@@ -335,6 +344,8 @@ async function findJsonPaths(config) {
   }
   return found;
 }
+
+probeOnce = SortDiagnostics.trace("poll.probe", probeOnce);
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target !== "callpoll") return false;

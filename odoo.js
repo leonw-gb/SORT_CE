@@ -23,7 +23,7 @@ const Odoo = (() => {
         params: { service, method, args }
       })
     });
-    if (!res.ok) throw new Error(`Odoo returned HTTP ${res.status}`);
+    if (!res.ok) throw Object.assign(new Error(`Odoo returned HTTP ${res.status}`), {status: res.status});
     const data = await res.json();
     if (data.error) {
       const d = data.error.data || {};
@@ -31,6 +31,8 @@ const Odoo = (() => {
     }
     return data.result;
   }
+
+  jsonrpc = SortDiagnostics.trace("odoo.rpc", jsonrpc);
 
   class OdooClient {
     constructor(cfg) {
@@ -117,6 +119,10 @@ const Odoo = (() => {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
       .replace(/>/g, "&gt;").replace(/'/g, "&#39;").replace(/"/g, "&quot;");
   }
+
+  OdooClient.prototype.authenticate = SortDiagnostics.trace("odoo.auth", OdooClient.prototype.authenticate);
+  OdooClient.prototype.recentTickets = SortDiagnostics.trace("odoo.tickets", OdooClient.prototype.recentTickets);
+  OdooClient.prototype.addRecordingLink = SortDiagnostics.trace("odoo.link", OdooClient.prototype.addRecordingLink);
 
   return { OdooClient };
 })();

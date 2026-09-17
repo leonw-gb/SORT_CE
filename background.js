@@ -3,6 +3,7 @@
 // ALL tabs are recorded once a session is active.
 
 // Fixed deployment values (upload host, Odoo host/db/model, reminder interval).
+importScripts("build-info.js", "diagnostics-core.js", "diagnostics.js");
 importScripts("defaults.js");
 // Shared with the offscreen poller: one copy of the "is this call mine" rule.
 importScripts("callmatch.js");
@@ -372,6 +373,7 @@ async function initializeTab(tabId) {
   const msg = { type: "initializeRecorder", recordingId: activeSession.id };
   try {
     await chrome.tabs.sendMessage(tabId, msg);
+    void SortDiagnostics.emit("tab.initialize", "ok");
     return;
   } catch (e) {
     // No live content script in this tab -> inject fresh copies.
@@ -384,11 +386,13 @@ async function initializeTab(tabId) {
     });
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ["content.js"]
+      files: ["build-info.js", "diagnostics-core.js", "diagnostics.js", "content.js"]
     });
     await chrome.tabs.sendMessage(tabId, msg);
+    void SortDiagnostics.emit("tab.initialize", "recovered");
   } catch (e) {
     // chrome:// pages, PDF viewer, etc. -- cannot inject, safe to skip.
+    void SortDiagnostics.emit("tab.initialize", "unavailable");
     injectedTabs.delete(tabId);
   }
 }
@@ -917,8 +921,27 @@ async function ensureCallPollerAlive() {
     const res = await chrome.runtime.sendMessage({ target: "callpoll", type: "status" });
     alive = !!(res && res.polling);
   } catch (e) { /* no offscreen document listening */ }
-  if (!alive) await syncCallPoller();
+  if (!alive) {
+    void SortDiagnostics.emit("poll.repair", "started");
+    await syncCallPoller();
+  }
 }
+
+
+// Diagnostics wrappers preserve return values and thrown errors; arguments are never logged.
+startSession = SortDiagnostics.trace("session.start", startSession);
+stopSession = SortDiagnostics.trace("session.stop", stopSession);
+saveRecording = SortDiagnostics.trace("session.save", saveRecording);
+deleteRecording = SortDiagnostics.trace("session.delete", deleteRecording);
+saveConfig = SortDiagnostics.trace("config.save", saveConfig);
+startCapture = SortDiagnostics.trace("capture.start", startCapture);
+stopCapture = SortDiagnostics.trace("capture.stop", stopCapture);
+const ensureOffscreenWithoutDiagnostics = ensureOffscreen;
+ensureOffscreen = async function (...args) {
+  try { return await ensureOffscreenWithoutDiagnostics.apply(this, args); }
+  catch (e) { void SortDiagnostics.error("offscreen.ensure", e); throw e; }
+};
+handleExportRecording = SortDiagnostics.trace("bundle.download", handleExportRecording);
 
 chrome.runtime.onStartup.addListener(() => {
   chrome.alarms.create(POLL_KEEPALIVE_ALARM, { periodInMinutes: 1 });
@@ -1016,6 +1039,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // session so the player knows the video ends early.
     // capture.js reports the encoder actually began.
     case "captureStarted":
+      void SortDiagnostics.emit("capture.encode", "ok");
       // The picker is done and the encoder is running, so this window has
       // nothing left to ask. Get it out of the operator's way -- and out of
       // the recording, if they chose to capture this screen -- but keep it
@@ -1032,11 +1056,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     // The operator cancelled or denied the picker.
     case "captureFailed":
+      void SortDiagnostics.emit("capture.choose", "unavailable");
       if (capturePending) capturePending({ success: false, error: message.error });
       closeCaptureWindow();
       return false;
 
     case "captureEndedByUser":
+      void SortDiagnostics.emit("capture.stop", "cancelled");
       if (activeSession && activeSession.video && activeSession.video.captured) {
         stopCapture(activeSession.id).then((res) => {
           if (activeSession && activeSession.video) {
@@ -1367,3 +1393,17 @@ chrome.windows.onRemoved.addListener((winId) => {
 
 // Restore badge state after service worker wakes up
 updateBadge(!!activeSession);
+
+SortDiagnostics.setHealthReader(async () => {
+  const cfg = await getConfig();
+  let polling = false;
+  try {
+    const status = await Promise.race([
+      chrome.runtime.sendMessage({target: "callpoll", type: "status"}),
+      new Promise(resolve => setTimeout(() => resolve(null), 1500))
+    ]);
+    polling = !!(status && status.polling);
+  } catch (_) {}
+  return {recording: !!activeSession, captured: !!(activeSession && activeSession.video && activeSession.video.captured),
+    configured: !!(cfg.callTrigger && cfg.callTrigger.url && cfg.sipgateName), polling};
+});

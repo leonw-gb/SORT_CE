@@ -100,6 +100,7 @@ function choose(id) {
 }
 
 async function loadTickets() {
+  void SortDiagnostics.emit("ticket.load", "started");
   if (!cfg.odoo || !cfg.odoo.username || !cfg.odoo.apiKey) {
     setStatus("Add your Odoo login and API key in the extension settings, or type the ticket number here.");
     render();
@@ -109,8 +110,10 @@ async function loadTickets() {
   try {
     const client = new Odoo.OdooClient(cfg.odoo);
     tickets = await client.recentTickets(cfg.odoo.limit || 50, cfg.odoo.model || "helpdesk.ticket");
+    void SortDiagnostics.emit("ticket.load", "ok", {count: tickets.length});
     setStatus(`${tickets.length} tickets loaded. Pick one, or type a number.`);
   } catch (e) {
+    void SortDiagnostics.error("ticket.load", e);
     tickets = [];
     setStatus(`Odoo: ${e.message}`, "err");
   }
@@ -186,6 +189,7 @@ async function saveToDisk(ref, seq) {
 }
 
 async function run(action) {
+  void SortDiagnostics.emit("ticket.action", "started");
   if (busy) return;
   const ref = ticketRef();
   if (!ref && action !== "local") {
@@ -262,9 +266,11 @@ async function run(action) {
       `<span style="color:var(--ok)">Done.</span> Saved as ${esc(path)}` +
       (link ? ` · <a href="${esc(link)}" target="_blank">Open the ${linkKind === "session" ? "session" : "video"}</a>` : "") +
       (odooDone ? ` · added to ticket ${esc(ref)}` : "");
+    void SortDiagnostics.emit("ticket.action", "ok");
     setTimeout(() => window.close(), 4000);
 
   } catch (e) {
+    void SortDiagnostics.error("ticket.action", e);
     barEl.classList.remove("on");
     setStatus(e.message, "err");
     setBusy(false);
@@ -273,6 +279,11 @@ async function run(action) {
     await ask({ type: "finishRecording", id: recId, ticket: { ref, error: e.message, pending: true } });
   }
 }
+
+
+// Diagnostics wrappers preserve return values and thrown errors; arguments are never logged.
+buildBundle = SortDiagnostics.trace("bundle.build", buildBundle);
+saveToDisk = SortDiagnostics.trace("bundle.download", saveToDisk);
 
 // ---- wiring ------------------------------------------------------------------
 $("q").addEventListener("input", render);

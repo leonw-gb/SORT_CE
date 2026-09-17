@@ -70,6 +70,7 @@ function bitrateFor(width, height) {
 // could hide it, silent screen recording would be one line of JavaScript away.
 // Pressing "Hide" on the bubble dismisses it for that share. See README.
 function chooseSource() {
+  void SortDiagnostics.emit("capture.choose", "started");
   return new Promise((resolve, reject) => {
     chrome.tabs.getCurrent((tab) => {
       const cb = (streamId) => {
@@ -108,6 +109,7 @@ btn.addEventListener("click", async () => {
       }
     });
   } catch (e) {
+    void SortDiagnostics.error("capture.choose", e);
     btn.disabled = false;
     const msg = e && e.name === "NotAllowedError"
       ? "You cancelled the picker. Click again to share your screen."
@@ -121,6 +123,7 @@ btn.addEventListener("click", async () => {
 });
 
 function startEncoder() {
+  void SortDiagnostics.emit("capture.encode", "started");
   const track = stream.getVideoTracks()[0];
   const s = (track && track.getSettings) ? track.getSettings() : {};
   const bitrate = bitrateFor(s.width, s.height);
@@ -132,6 +135,7 @@ function startEncoder() {
 
   chunks = [];
   recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bitrate });
+  recorder.addEventListener("error", event => { void SortDiagnostics.error("capture.encode", event.error); });
   recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
   recorder.onstop = () => {
     const blob = new Blob(chunks, { type: mime });
@@ -244,6 +248,7 @@ async function stopCapture() {
   try {
     await saveBlob(recordingId, blob, mimeType, startedAtCopy);
   } catch (e) {
+    void SortDiagnostics.error("capture.save", e);
     setStatus("Could not save the video: " + (e.message || e), true);
     return { success: false, error: String(e.message || e), size: blob.size };
   }
@@ -270,4 +275,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // Opening the picker straight away saves the operator a click: the window was
 // opened by their press of Start Recording, which counts as the user gesture.
+
+// Diagnostics wrappers preserve return values and thrown errors; arguments are never logged.
+saveBlob = SortDiagnostics.trace("capture.save", saveBlob);
+
 btn.click();

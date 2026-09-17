@@ -109,8 +109,11 @@ async function preview(file) {
   setNote("");
 
   try {
+    void SortDiagnostics.emit("import.parse", "started");
     parsed = await SORTZ.parse(file);
+    void SortDiagnostics.emit("import.parse", "ok");
   } catch (e) {
+    void SortDiagnostics.error("import.parse", e);
     parsed = null;
     setNote(String(e.message || e), "err");
     $("status").textContent = "";
@@ -151,6 +154,7 @@ async function preview(file) {
 // ---- import -------------------------------------------------------------------
 $("confirm").addEventListener("click", async () => {
   if (!parsed) return;
+  void SortDiagnostics.emit("import.save", "started");
   $("confirm").disabled = true;
   $("cancel").disabled = true;
   $("bar").classList.add("show");
@@ -222,6 +226,7 @@ $("confirm").addEventListener("click", async () => {
       }
     }
 
+    void SortDiagnostics.emit("import.save", "ok");
     $("barFill").style.width = "100%";
     $("status").textContent = "Imported. It is in your recordings list.";
     // The list is the destination, not the timeline. Opening a tab here decides
@@ -231,6 +236,7 @@ $("confirm").addEventListener("click", async () => {
 
     setTimeout(() => window.close(), 900);
   } catch (e) {
+    void SortDiagnostics.error("import.save", e);
     // Quota is the realistic failure: a few imported sessions fill the bucket.
     const msg = String(e && e.name === "QuotaExceededError"
       ? "Not enough browser storage for this session. Delete a recording and try again."

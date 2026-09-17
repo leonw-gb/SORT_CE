@@ -13,9 +13,16 @@ let rrwebStopFn = null;
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "initializeRecorder") {
-    initialize(message.recordingId);
+    try {
+      initialize(message.recordingId);
+      void SortDiagnostics.emit("content.initialize", "ok");
+    } catch (e) {
+      void SortDiagnostics.error("content.initialize", e);
+      throw e;
+    }
   } else if (message.type === "teardownRecorder") {
     teardown();
+    void SortDiagnostics.emit("content.teardown", "ok");
   }
 });
 
@@ -247,7 +254,7 @@ function emit(recordingId, event) {
     type: "recordEvent",
     recordingId,
     event
-  }).catch(() => {});
+  }).catch((e) => { void SortDiagnostics.error("content.send", e); });
 }
 
 // ---- <video> feed frame capture --------------------------------------------

@@ -36,8 +36,9 @@ function postBundle({ url, field, blob, filename, onProgress }) {
       if (onProgress && e.lengthComputable) onProgress(e.loaded, e.total);
     };
     xhr.onerror = () => reject(Object.assign(new Error(`Cannot reach the upload server at ${url}`), { network: true }));
-    xhr.ontimeout = () => reject(new Error("The upload timed out"));
+    xhr.ontimeout = () => reject(Object.assign(new Error("The upload timed out"), {name: "TimeoutError"}));
     xhr.onload = () => {
+      void SortDiagnostics.emit("upload.request", (xhr.status === 200 || xhr.status === 201) ? "ok" : "failed", {status: xhr.status});
       let data = null;
       try { data = JSON.parse(xhr.responseText); } catch (e) { /* not JSON */ }
 
@@ -71,6 +72,7 @@ async function uploadVideo({ baseUrl, blob, filename, onProgress }) {
     // endpoint is a real complaint about this bundle and must be shown, not
     // retried against an endpoint that will reject it too.
     if (e.status !== 404 && e.status !== 405) throw e;
+    void SortDiagnostics.emit("upload.fallback", "started", {status: e.status});
     data = await postBundle({
       url: `${base}/api/upload`, field: "file", blob, filename, onProgress
     });
@@ -83,5 +85,10 @@ async function uploadVideo({ baseUrl, blob, filename, onProgress }) {
   if (!link) throw new Error("The upload finished but the server returned no link");
   return { url: link, sessionUrl: sessionUrl || null };
 }
+
+
+// Diagnostics wrappers preserve return values and thrown errors; arguments are never logged.
+postBundle = SortDiagnostics.trace("upload.request", postBundle);
+uploadVideo = SortDiagnostics.trace("upload.bundle", uploadVideo);
 
 if (typeof globalThis !== "undefined") globalThis.uploadVideo = uploadVideo;
