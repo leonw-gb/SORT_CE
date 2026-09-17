@@ -643,7 +643,7 @@ chrome.runtime.sendMessage({ type: "consumeNameWarning" }, (res) => {
 });
 
 // No dependency on settings validation: support export works before setup.
-document.getElementById("supportBuild").textContent = `SORT ${SORT_BUILD_INFO.version} / build ${SORT_BUILD_INFO.packageBuild.slice(0, 12)}`;
+document.getElementById("supportBuild").textContent = `SORT ${chrome.runtime.getManifest().version} / build ${SORT_BUILD_INFO.packageBuild.slice(0, 12)}`;
 document.getElementById("exportSupportLogs").addEventListener("click", async () => {
   const button = document.getElementById("exportSupportLogs"), status = document.getElementById("supportStatus");
   button.disabled = true;

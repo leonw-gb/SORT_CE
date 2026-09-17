@@ -5,6 +5,10 @@
   if (globalThis.SortDiagnostics) return;
   const P = globalThis.SortDiagnosticsPolicy;
   const B = globalThis.SORT_BUILD_INFO;
+  // Chrome's manifest is the sole authority for version labels in this context.
+  // Do not relabel stored events: older contexts retain their original identity.
+  const manifestVersion = chrome.runtime.getManifest().version;
+  const emitterIdentity = Object.freeze({version: manifestVersion, packageBuild: B.packageBuild});
   const worker = typeof document === 'undefined';
   const extensionPage = !worker && location.protocol === 'chrome-extension:';
   const page = extensionPage ? location.pathname.split('/').pop().replace(/\.html$/, '') : 'content';
@@ -40,7 +44,7 @@
       } catch (_) { entries.push({file, unavailable: true}); }
     }
     const installedFingerprint = await hash(new TextEncoder().encode(JSON.stringify(entries)));
-    return {version: chrome.runtime.getManifest().version, packageBuild: B.packageBuild,
+    return {version: manifestVersion, packageBuild: B.packageBuild,
       installedFingerprint, fingerprintAlgorithm: 'SHA-256 of UTF-8 JSON file inventory, in listed order',
       capturedAt: new Date().toISOString(), files: entries,
       complete: entries.every(x => !x.unavailable),
@@ -100,7 +104,7 @@
   }
   function emit(operation, outcome = 'ok', input = {}) {
     try {
-      const clean = P.clean({source, operation, outcome, details: P.details(input), emitter: B});
+      const clean = P.clean({source, operation, outcome, details: P.details(input), emitter: emitterIdentity});
       if (!clean) return Promise.resolve(false);
       if (worker) return receive(clean);
       const key = JSON.stringify(clean), now = Date.now();
@@ -172,7 +176,7 @@
       let health = {};
       try { health = P.details(await timeout(healthReader(), 3000)); } catch (_) {}
       return {format: 'SORT support diagnostics', schemaVersion: 1, exportedAt: new Date().toISOString(),
-        release: {version: B.version, packageBuild: B.packageBuild},
+        release: {version: manifestVersion, packageBuild: B.packageBuild},
         workerBuild: currentBuild, installedAtExport,
         filesChangedSinceWorkerStart: currentBuild.installedFingerprint !== installedAtExport.installedFingerprint,
         environment: await environment(),
@@ -204,7 +208,7 @@
       const stamp = report.exportedAt.replace(/[:.]/g, '-');
       try {
         const id = await chrome.downloads.download({url: response.url,
-          filename: `SORT-support-${B.version}-${report.installedAtExport.installedFingerprint.slice(0, 12)}-${stamp}.json`,
+          filename: `SORT-support-${report.release.version}-${report.installedAtExport.installedFingerprint.slice(0, 12)}-${stamp}.json`,
           saveAs: false, conflictAction: 'uniquify'});
         await chrome.storage.session.set({['sortSupportDownload.' + id]: response.url});
         // Also check for completion that beat listener registration/state storage.
