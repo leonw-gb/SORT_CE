@@ -217,13 +217,33 @@ function makeSessionId() {
 // trigger must NOT open a second capture -- two screen recordings of the same
 // screen, two ticket dialogs, and the manual one silently orphaned. The first
 // recording wins and simply absorbs the call: we note the call on the running
-// session so the ticket dialog can pre-select its ticket later, and re-arm the
-// reminder so the "still recording?" prompt is measured from the call, not from
-// whenever the operator happened to press Start.
+// session so the ticket dialog can pre-select its ticket later. Reminders are
+// suspended for the whole call, not merely delayed from the time it began.
 //
 // The reverse order needs no special case: a call-started recording is a normal
 // active session, so a later manual Start hits the same guard.
+// Coalesce concurrent starts while the screen picker is open. Call state is
+// tracked independently, including a hangup before a session has been created.
+let sessionStartPromise = null;
+let pendingCallEndPrompt = false;
 async function startSession(options) {
+  if (sessionStartPromise) {
+    const result = await sessionStartPromise;
+    if (result.success && activeSession && options && options.trigger === "call" &&
+        !activeSession.calls.some(c => c.id === (options.call || {}).id)) {
+      attachCallToSession(options.call || {});
+    }
+    return result.success ? {...result, joinedExisting: true} : result;
+  }
+  sessionStartPromise = startSessionImpl(options);
+  try {
+    const result = await sessionStartPromise;
+    if (result.success && pendingCallEndPrompt && canRemind()) await requestContinuePrompt("call");
+    return result;
+  } finally { sessionStartPromise = null; pendingCallEndPrompt = false; }
+}
+
+async function startSessionImpl(options) {
   if (activeSession) {
     if (options && options.trigger === "call") {
       attachCallToSession(options.call || {});
@@ -326,9 +346,9 @@ async function startSession(options) {
 
   updateBadge(true);
 
-  // Always on: an unattended recording that nobody stops fills the disk and
-  // buries the useful minutes in an hour of idle screen.
-  armContinueAlarm();
+  // Only remind while off-call. A hangup during the share picker still gets
+  // its prompt once there is an actual recording to continue or stop.
+  void armContinueAlarm();
 
   return {
     success: true,
@@ -360,8 +380,9 @@ function attachCallToSession(call) {
     timestamp: entry.startedAt,
     relativeTime: entry.startedAt - activeSession.startTime
   });
-  // Measure the nag from the call, which is when the clock that matters starts.
-  armContinueAlarm();
+  // This records historical context only. Live call state is established by
+  // the trigger BEFORE awaiting the share picker; never revive it here after
+  // a hangup which arrived while the picker was open.
 }
 
 // Send initializeRecorder to a tab; if the content script is unreachable
@@ -370,30 +391,41 @@ function attachCallToSession(call) {
 // Without this, a tab that was already open before the extension reload records
 // NOTHING until it is manually refreshed.
 async function initializeTab(tabId) {
-  const msg = { type: "initializeRecorder", recordingId: activeSession.id };
+  const session = activeSession;
+  const isCurrent = () => !!session && activeSession === session && !session.endTime;
+  if (!isCurrent()) return;
+  const msg = {type: "initializeRecorder", recordingId: session.id};
+  const cancelStale = async () => {
+    if (isCurrent()) return false;
+    try { await chrome.tabs.sendMessage(tabId, {type: "teardownRecorder", recordingId: session.id}); } catch (_) {}
+    return true;
+  };
   try {
-    await chrome.tabs.sendMessage(tabId, msg);
-    void SortDiagnostics.emit("tab.initialize", "ok");
-    return;
-  } catch (e) {
-    // No live content script in this tab -> inject fresh copies.
-  }
+    const response = await chrome.tabs.sendMessage(tabId, msg);
+    if (await cancelStale()) return;
+    if (response?.success === true) {
+      void SortDiagnostics.emit("tab.initialize", "ok");
+      return;
+    }
+    if (response?.cancelled) return;
+    // Older/orphaned scripts may not acknowledge: inject the current version.
+  } catch (_) {}
+  if (!isCurrent()) return;
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      world: "MAIN",
-      files: ["ws-hook.js"]
-    });
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ["build-info.js", "diagnostics-core.js", "diagnostics.js", "content.js"]
-    });
-    await chrome.tabs.sendMessage(tabId, msg);
-    void SortDiagnostics.emit("tab.initialize", "recovered");
-  } catch (e) {
-    // chrome:// pages, PDF viewer, etc. -- cannot inject, safe to skip.
-    void SortDiagnostics.emit("tab.initialize", "unavailable");
-    injectedTabs.delete(tabId);
+    await chrome.scripting.executeScript({target: {tabId}, world: "MAIN", files: ["ws-hook.js"]});
+    if (!isCurrent()) return;
+    await chrome.scripting.executeScript({target: {tabId},
+      files: ["build-info.js", "diagnostics-core.js", "diagnostics.js", "content.js"]});
+    if (!isCurrent()) return;
+    const response = await chrome.tabs.sendMessage(tabId, msg);
+    if (await cancelStale()) return;
+    void SortDiagnostics.emit("tab.initialize", response?.success ? "recovered" : "unavailable");
+    if (!response?.success) injectedTabs.delete(tabId);
+  } catch (_) {
+    if (isCurrent()) {
+      void SortDiagnostics.emit("tab.initialize", "unavailable");
+      injectedTabs.delete(tabId);
+    }
   }
 }
 
@@ -401,6 +433,8 @@ async function stopSession(options) {
   if (!activeSession) return { success: false, error: "No active session" };
 
   activeSession.endTime = Date.now();
+  clearContinueAlarm();
+  void closeContinueWindow();
   const id = activeSession.id;
 
   // Stop the encoder BEFORE saving so the video's final size/duration can be
@@ -416,9 +450,8 @@ async function stopSession(options) {
   // assignment, download and upload all happen afterwards against the stored
   // session, so closing the dialog -- or a failed upload -- never loses a video.
   activeSession.ticket = null;
-  // Whatever ends the session ends our interest in its call: without this a
-  // late hangup would prompt against the NEXT recording.
-  followedCallId = null;
+  // Keep live call state independently of recordings. If the operator starts
+  // another manual recording during this same call it must also stay quiet.
   const hadVideo = !!(activeSession.video && activeSession.video.saved);
   await saveRecording(activeSession);
   activeSession = null;
@@ -496,49 +529,83 @@ async function finishRecording(id, ticket) {
 // five-minute nag is irrelevant.
 const CONTINUE_ALARM = "continuePrompt";
 let continueWindowId = null;
+let reminderEpoch = 0;
+let reminderDueAt = 0;
+let reminderAlarmQueue = Promise.resolve();
+
+function canRemind(session = activeSession) {
+  return !!session && activeSession === session && !session.endTime && !callActive;
+}
+
+function queueReminderAlarm(work) {
+  reminderAlarmQueue = reminderAlarmQueue.then(work, work).catch(() => {});
+  return reminderAlarmQueue;
+}
 
 async function armContinueAlarm() {
   const minutes = FIXED.continueMinutes;
-  chrome.alarms.create(CONTINUE_ALARM, { delayInMinutes: minutes });
+  if (!canRemind()) { clearContinueAlarm(); return minutes; }
+  const epoch = ++reminderEpoch;
+  const dueAt = reminderDueAt = Date.now() + minutes * 60000;
+  await queueReminderAlarm(async () => {
+    if (epoch !== reminderEpoch || !canRemind()) return;
+    await chrome.alarms.create(CONTINUE_ALARM, { when: dueAt });
+  });
   return minutes;
 }
 
 function clearContinueAlarm() {
-  chrome.alarms.clear(CONTINUE_ALARM).catch(() => {});
+  ++reminderEpoch;
+  reminderDueAt = 0;
+  // Serialize Chrome API calls: a delayed clear must not erase a newer timer.
+  return queueReminderAlarm(() => chrome.alarms.clear(CONTINUE_ALARM));
 }
 
 async function closeContinueWindow() {
-  if (continueWindowId == null) return;
-  try { await chrome.windows.remove(continueWindowId); } catch (e) {}
+  const id = continueWindowId;
   continueWindowId = null;
+  if (id == null) return;
+  try { await chrome.windows.remove(id); } catch (_) {}
 }
 
-// `reason` changes only the wording: "the call ended" is a different question
-// from "you have been recording a while", and answering the wrong one is how an
-// operator ends up stopping a recording they meant to keep.
-async function openContinueWindow(minutes, reason) {
-  if (!activeSession) return;
+async function openContinueWindow(minutes, reason, session = activeSession, epoch = reminderEpoch) {
+  const current = () => epoch === reminderEpoch && canRemind(session);
+  if (!current()) return;
   await closeContinueWindow();
+  if (!current()) return;
   const url = chrome.runtime.getURL(
-    `continue.html?min=${minutes}&why=${encodeURIComponent(reason || "timer")}`);
+    `continue.html?min=${minutes}&why=${encodeURIComponent(reason || "timer")}` +
+    `&rec=${encodeURIComponent(session.id)}&prompt=${epoch}`);
   const W = 460, H = 220;
   let left, top;
   try {
     const cur = await chrome.windows.getLastFocused();
     left = Math.max(0, Math.round(cur.left + (cur.width - W) / 2));
     top = Math.max(0, Math.round(cur.top + (cur.height - H) / 3));
-  } catch (e) {}
+  } catch (_) {}
+  if (!current()) return;
   try {
     const win = await chrome.windows.create({ url, type: "popup", width: W, height: H, left, top, focused: true });
+    if (!win || win.id == null) return;
+    // A call can start while Chrome is creating the window. Retire that window
+    // immediately; its token also prevents its buttons acting on the session.
+    if (!current()) { try { await chrome.windows.remove(win.id); } catch (_) {} return; }
     continueWindowId = win.id;
-  } catch (e) {}
+  } catch (_) {}
+}
+
+async function requestContinuePrompt(reason) {
+  const session = activeSession;
+  if (!canRemind(session)) return;
+  const arming = armContinueAlarm();
+  const epoch = reminderEpoch;
+  const minutes = await arming;
+  if (epoch !== reminderEpoch || !canRemind(session)) return;
+  await openContinueWindow(minutes, reason, session, epoch);
 }
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === POLL_KEEPALIVE_ALARM) {
-    // The minute alarm is also the safety net for a trigger that was written
-    // while the worker was down: check the queue on every tick, not only at
-    // worker start.
     chrome.storage.local.get("callTrigger").then(({ callTrigger }) => {
       if (callTrigger && Date.now() - Number(String(callTrigger.id).split("_")[0]) < 60000) {
         consumeTrigger(callTrigger);
@@ -548,11 +615,11 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     return;
   }
   if (alarm.name !== CONTINUE_ALARM) return;
-  if (!activeSession) return;
-  openContinueWindow(FIXED.continueMinutes, "timer");
-  // Re-arm: if the operator ignores the window entirely we still ask again
-  // rather than going quiet for the rest of the session.
-  armContinueAlarm();
+  if (!canRemind()) { clearContinueAlarm(); return; }
+  // Ignore an already-queued notification from an earlier timer/call/session.
+  if (!reminderDueAt || Date.now() < reminderDueAt ||
+      (Number.isFinite(alarm.scheduledTime) && alarm.scheduledTime < reminderDueAt)) return;
+  await requestContinuePrompt("timer");
 });
 
 chrome.windows.onRemoved.addListener((winId) => {
@@ -763,21 +830,33 @@ async function focusCaptureWindow() {
 // stops by matching the callId we are following. Ringing never starts anything;
 // on a busy hotline that would open a picker on sixteen machines at once.
 
-// The call we started this session for, so a hangup for a DIFFERENT call
-// (a colleague's, or one we joined mid-way) cannot end our recording.
+// Live call state is independent of activeSession and is updated before any
+// asynchronous recording startup. Poll errors do not mean the call ended.
 let followedCallId = null;
+let callActive = false;
 
-// A hangup asks rather than stops: the operator is usually still writing up
-// what just happened, and killing the recording at the moment the customer
-// hangs up would cut off the part that explains the fix.
+function markCallActive(call) {
+  callActive = true;
+  followedCallId = call.callId || call.id || null;
+  pendingCallEndPrompt = false;
+  clearContinueAlarm();
+  void closeContinueWindow();
+}
+
 async function handleCallEnded(callId) {
-  if (!activeSession) { followedCallId = null; return; }
+  if (!callActive) return; // duplicate or unrelated hangup: no extra prompt
   if (followedCallId && callId && callId !== followedCallId) return;
+  callActive = false;
   followedCallId = null;
-  // Same prompt as the five-minute reminder, so there is one way to end a
-  // recording rather than two that behave slightly differently.
-  await armContinueAlarm();
-  openContinueWindow(FIXED.continueMinutes, "call");
+  if (sessionStartPromise) { pendingCallEndPrompt = true; return; }
+  if (canRemind()) await requestContinuePrompt("call");
+}
+
+function handleCallAdopted(call) {
+  if (call) { markCallActive(call); return Promise.resolve(); }
+  // A successful re-adoption of "no call" also reconciles a missed hangup.
+  // Poll failures never enter this path.
+  return handleCallEnded(null);
 }
 
 // ---- worker trail --------------------------------------------------------------
@@ -794,7 +873,8 @@ async function trail(what, extra) {
 }
 
 async function handleCallStarted(call) {
-  await trail("worker received callStarted", { callId: call.callId, event: call.event });
+  markCallActive(call);
+  void trail("worker received callStarted", { callId: call.callId, event: call.event });
   const res = await startSession({
     trigger: "call",
     call: {
@@ -813,7 +893,6 @@ async function handleCallStarted(call) {
     error: res && res.error,
     needsName: !!(res && res.needsName)
   });
-  if (res && res.success) followedCallId = call.callId;
   return res;
 }
 
@@ -827,11 +906,20 @@ async function handleCallStarted(call) {
 // Both paths land here. The nonce makes the duplicate harmless: whichever
 // arrives first does the work, the second is dropped.
 let lastTriggerId = null;
+const recentTriggerIds = new Set();
+let lastTriggerTimestamp = 0;
 
 async function consumeTrigger(t) {
-  if (!t || !t.id || t.id === lastTriggerId) return;
+  if (!t || !t.id || t.id === lastTriggerId || recentTriggerIds.has(t.id)) return;
+  const timestamp = Number(String(t.id).split("_")[0]);
+  if (Number.isFinite(timestamp) && timestamp > 0) {
+    if (timestamp < lastTriggerTimestamp) return;
+    lastTriggerTimestamp = timestamp;
+  }
+  recentTriggerIds.add(t.id);
+  if (recentTriggerIds.size > 256) recentTriggerIds.delete(recentTriggerIds.values().next().value);
   lastTriggerId = t.id;
-  await trail("trigger picked up", { via: t._via || "storage", type: t.type });
+  void trail("trigger picked up", { via: t._via || "storage", type: t.type });
   if (t.type === "callStateStarted") {
     try {
       await handleCallStarted(t.call || {});
@@ -841,7 +929,7 @@ async function consumeTrigger(t) {
   } else if (t.type === "callStateEnded") {
     await handleCallEnded(t.callId || null);
   } else if (t.type === "callStateAdopted") {
-    if (t.call && activeSession) followedCallId = t.call.callId;
+    await handleCallAdopted(t.call || null);
   }
 }
 
@@ -993,9 +1081,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // its hangup still prompts, but do not open a picker for a call the
     // operator answered minutes ago.
     case "callStateAdopted":
-      if (message.call && activeSession) followedCallId = message.call.callId;
-      sendResponse({ success: true });
-      return false;
+      consumeTrigger(Object.assign({ _via: "message" }, message,
+        { id: message.id || `msg_adopt_${message.call && message.call.callId || "none"}` }))
+        .then(() => sendResponse({ success: true }));
+      return true;
 
     case "callPollError":
       console.warn("SORT: call-state endpoint unreachable:", message.error);
@@ -1077,16 +1166,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       stopSession(message.options).then(sendResponse);
       return true;
 
-    // "Keep recording" on the reminder: re-arm and carry on.
+    // Scope reminder buttons to the session and prompt which created them.
+    // A stale prompt must not stop a newer recording or interrupt a new call.
+    case "reminderResponse": {
+      if (!canRemind() || message.recordingId !== activeSession.id ||
+          String(message.promptToken) !== String(reminderEpoch)) {
+        sendResponse({ success: false, cancelled: true });
+        return false;
+      }
+      if (message.action === "stop") {
+        stopSession().then(sendResponse);
+      } else if (message.action === "keep") {
+        void closeContinueWindow();
+        armContinueAlarm().then(min => sendResponse({ success: true, minutes: min }));
+      } else {
+        sendResponse({ success: false });
+        return false;
+      }
+      return true;
+    }
+
+    // Backward-compatible entry point; call guard still applies.
     case "keepRecording":
       armContinueAlarm().then((min) => sendResponse({ success: true, minutes: min }));
       return true;
 
     case "promptContinue":
-      armContinueAlarm().then((min) => {
-        openContinueWindow(min);
-        sendResponse({ success: true });
-      });
+      requestContinuePrompt("timer").then(() => sendResponse({ success: true }));
       return true;
 
     case "nextTicketSequence":
@@ -1123,6 +1229,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
       return true;
 
+    case "isRecordingSession":
+      sendResponse({active: !!activeSession && !activeSession.endTime &&
+        message.recordingId === activeSession.id});
+      return false;
+
     case "getSessionStatus":
       sendResponse({
         active: !!activeSession,
@@ -1133,7 +1244,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
 
     case "recordEvent":
-      if (!activeSession || message.recordingId !== activeSession.id) {
+      if (!activeSession || activeSession.endTime || message.recordingId !== activeSession.id) {
         sendResponse({ ok: false });
         return false;
       }

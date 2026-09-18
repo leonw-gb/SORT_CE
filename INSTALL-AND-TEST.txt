@@ -1,0 +1,53 @@
+SORT 2.28.1 - call-aware recording reminder fix
+
+Apply this patch on top of the latest offscreen/lifecycle fix already tested.
+This is an incremental patch, not a complete extension installation.
+Version remains 2.28.1; the package build identifier changes.
+Package build: ba21da0f1ec647762bea4b94c64a68f5d48b677949a99359c6d46593110035bd
+
+INSTALL
+1. Stop and save any recording. Close any old SORT reminder/capture windows.
+2. Back up your current SORT extension folder.
+3. Extract this ZIP. Copy background.js, continue.js and build-info.js into
+   your existing SORT extension folder, replacing those three files.
+4. In Chrome, open chrome://extensions and click Reload for SORT.
+5. Refresh all website tabs you will record, to replace their old content scripts.
+6. Confirm the call connection test succeeds before the live-call test below.
+
+Do NOT replace defaults.js, manifest.json, icons, libraries or other files.
+No deployment settings, icon behavior, permissions or viewer changes are included.
+
+EXPECTED BEHAVIOR
+- Active detected call: no recording reminder, even after five minutes.
+- Detected call end: prompt immediately if recording is running.
+- Off-call recording: repeat every five minutes, even if a prompt is ignored.
+- Keep recording: start a fresh five-minute off-call interval.
+- New call: close an existing reminder and suspend its timer.
+- Stop recording: clear reminder and timer.
+- A stale reminder cannot stop a new session or interrupt a newly active call.
+- A hangup while the share picker is open is handled after recording starts.
+- Poll connection errors are not treated as hangups. If the endpoint is
+  unavailable, an end-of-call prompt waits until a successful poll confirms
+  the call has ended. Existing call matching and polling cadence are unchanged.
+
+LIVE CHROME SMOKE TEST
+1. Take a call that triggers recording and complete the screen picker.
+   Stay on the call for at least six minutes: no reminder should appear.
+2. End the call: the call-ended reminder should appear after SORT detects it.
+3. Choose Keep recording. Stay off-call: another reminder should appear about
+   five minutes later. Ignore it for another five minutes: it should reappear.
+4. While a reminder is visible, take another call: it should close and stay
+   closed while that call is active. End the call: the prompt should return.
+5. Start a manual recording without a call: the first reminder should appear
+   about five minutes later. Stop: no later reminder should appear.
+
+Chrome may deliver alarms late (for example after system sleep); exact
+second-level timing is not guaranteed. Detection follows the existing poller.
+
+VALIDATION
+14 reminder regression groups passed with simulated Chrome APIs, covering
+manual/call recordings, repeated prompts, call adoption, hangup during picker,
+concurrent startup, stale alarms/actions, and asynchronous creation races.
+Existing diagnostics (15 groups), restricted-context/lifecycle (6 groups),
+and six field-label fixtures passed. All 19 JavaScript files passed syntax checks.
+No live Chrome/phone call test was run by the assistant; use the smoke test above.

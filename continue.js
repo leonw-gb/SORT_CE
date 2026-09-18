@@ -17,9 +17,9 @@ document.getElementById("detail").textContent =
   + ` and we will ask again in ${minutes} minutes.`;
 
 document.getElementById("stop").addEventListener("click", () => {
-  chrome.runtime.sendMessage({ type: "stopSession" }, () => window.close());
+  chrome.runtime.sendMessage({ type: "reminderResponse", action: "stop", recordingId: qs.get("rec"), promptToken: qs.get("prompt") }, () => window.close());
 });
 document.getElementById("cont").addEventListener("click", () => {
-  chrome.runtime.sendMessage({ type: "keepRecording" }, () => window.close());
+  chrome.runtime.sendMessage({ type: "reminderResponse", action: "keep", recordingId: qs.get("rec"), promptToken: qs.get("prompt") }, () => window.close());
 });
 window.addEventListener("keydown", (e) => { if (e.key === "Escape") window.close(); });

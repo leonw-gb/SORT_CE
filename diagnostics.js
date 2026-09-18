@@ -3,12 +3,48 @@
 (() => {
   'use strict';
   if (globalThis.SortDiagnostics) return;
+  // Publish a safe API before reading any browser metadata. Diagnostics must
+  // never prevent call polling or bundle creation from loading.
+  globalThis.SortDiagnostics = Object.freeze({
+    emit: () => Promise.resolve(false), error: () => Promise.resolve(false),
+    trace: (_operation, fn) => fn, setHealthReader: () => {}
+  });
+  try {
   const P = globalThis.SortDiagnosticsPolicy;
   const B = globalThis.SORT_BUILD_INFO;
   // Chrome's manifest is the sole authority for version labels in this context.
   // Do not relabel stored events: older contexts retain their original identity.
-  const manifestVersion = chrome.runtime.getManifest().version;
-  const emitterIdentity = Object.freeze({version: manifestVersion, packageBuild: B.packageBuild});
+  let manifestVersion = null, emitterIdentity = null, identityPromise = null;
+  let identityWaiters = 0;
+  // Offscreen documents expose runtime messaging, NOT getManifest/getURL.
+  // Prefer the synchronous API where supported; otherwise read our own bundled
+  // manifest using a DOM URL. No external endpoint or deployment data is read.
+  try {
+    if (typeof chrome.runtime.getManifest === 'function') {
+      manifestVersion = chrome.runtime.getManifest().version;
+      emitterIdentity = P.identity({version: manifestVersion, packageBuild: B.packageBuild});
+    }
+  } catch (_) {}
+  function getEmitterIdentity() {
+    if (emitterIdentity) return Promise.resolve(emitterIdentity);
+    if (!identityPromise) {
+      identityPromise = (async () => {
+        if (typeof location === 'undefined' || location.protocol !== 'chrome-extension:') return null;
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 4000);
+        try {
+          const response = await fetch(new URL('manifest.json', location.href).href,
+            {cache: 'no-store', signal: ctl.signal});
+          if (!response.ok) return null;
+          const manifest = await response.json();
+          const identity = P.identity({version: manifest.version, packageBuild: B.packageBuild});
+          if (identity) { manifestVersion = identity.version; emitterIdentity = identity; }
+          return identity;
+        } finally { clearTimeout(timer); }
+      })().catch(() => null).finally(() => { identityPromise = null; });
+    }
+    return identityPromise;
+  }
   const worker = typeof document === 'undefined';
   const extensionPage = !worker && location.protocol === 'chrome-extension:';
   const page = extensionPage ? location.pathname.split('/').pop().replace(/\.html$/, '') : 'content';
@@ -104,6 +140,14 @@
   }
   function emit(operation, outcome = 'ok', input = {}) {
     try {
+      if (!emitterIdentity) {
+        // Bound pending metadata work; do not delay the operation being logged.
+        if (identityWaiters >= 100) return Promise.resolve(false);
+        identityWaiters++;
+        const safeDetails = P.details(input);
+        return getEmitterIdentity().then(identity => identity ? emit(operation, outcome, safeDetails) : false)
+          .catch(() => false).finally(() => { identityWaiters--; });
+      }
       const clean = P.clean({source, operation, outcome, details: P.details(input), emitter: emitterIdentity});
       if (!clean) return Promise.resolve(false);
       if (worker) return receive(clean);
@@ -132,7 +176,7 @@
   function safeSite(filename, line, column) {
     try {
       const url = new URL(filename);
-      const own = new URL(chrome.runtime.getURL(''));
+      const own = new URL(extensionPage ? location.href : chrome.runtime.getURL(''));
       if (url.protocol !== own.protocol || url.host !== own.host) return null;
       const file = url.pathname.slice(1);
       if (!B.inventory.includes(file)) return null;
@@ -264,4 +308,9 @@
   });
   chrome.alarms.create(ALARM, {periodInMinutes: 60});
   void emit('runtime', 'ready');
+  } catch (_) {
+    // Keep the already-published safe API if diagnostics cannot initialize.
+    // Never expose the underlying exception or block application scripts.
+    console.warn('SORT diagnostics could not initialize; application services remain available.');
+  }
 })();

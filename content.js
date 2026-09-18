@@ -3,30 +3,64 @@
 
 // Guard: with programmatic re-injection (orphan recovery) this file can be
 // evaluated twice in the same page. The second evaluation must be a no-op.
-if (window.__mtrContentLoaded) {
-  throw new Error("multi-tab-recorder content script already loaded (harmless)");
-}
+(() => {
+if (window.__mtrContentLoaded) return;
 window.__mtrContentLoaded = true;
 
 let currentRecordingId = null;
 let rrwebStopFn = null;
 
-chrome.runtime.onMessage.addListener((message) => {
+// Each async initialization must still belong to the current live session.
+let initializationGeneration = 0;
+let extensionContextLost = false;
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "initializeRecorder") {
-    try {
-      initialize(message.recordingId);
-      void SortDiagnostics.emit("content.initialize", "ok");
-    } catch (e) {
-      void SortDiagnostics.error("content.initialize", e);
-      throw e;
-    }
+    const generation = ++initializationGeneration;
+    (async () => {
+      try {
+        const authorization = await chrome.runtime.sendMessage({
+          target: "worker", type: "isRecordingSession", recordingId: message.recordingId
+        });
+        if (extensionContextLost || generation !== initializationGeneration || !authorization?.active) {
+          sendResponse({success: false, cancelled: true});
+          return;
+        }
+        initialize(message.recordingId);
+        void SortDiagnostics.emit("content.initialize", "ok");
+        sendResponse({success: true});
+      } catch (e) {
+        if (contextIsInvalid(e)) retireInvalidContext();
+        else void SortDiagnostics.error("content.initialize", e);
+        sendResponse({success: false});
+      }
+    })();
+    return true;
   } else if (message.type === "teardownRecorder") {
-    teardown();
-    void SortDiagnostics.emit("content.teardown", "ok");
+    // A late cancellation of an old session must not stop a newer one.
+    if (!message.recordingId || !currentRecordingId || message.recordingId === currentRecordingId) {
+      initializationGeneration++;
+      teardown();
+      void SortDiagnostics.emit("content.teardown", "ok");
+    }
+    sendResponse({success: true});
+    return false;
   }
 });
+function contextIsInvalid(error) {
+  try {
+    return !chrome.runtime.id || /extension context invalidated/i.test(String(error?.message || ''));
+  } catch (_) { return true; }
+}
+function retireInvalidContext() {
+  if (extensionContextLost) return;
+  extensionContextLost = true;
+  initializationGeneration++;
+  currentRecordingId = null;
+  try { teardown(); } catch (_) {}
+}
 
 function teardown() {
+  currentRecordingId = null;
   stopCanvasFrameLoop();
   stopVideoFrameLoop();
   // Stop rrweb
@@ -250,11 +284,22 @@ function watchForFlutterCanvas() {
 }
 
 function emit(recordingId, event) {
-  chrome.runtime.sendMessage({
-    type: "recordEvent",
-    recordingId,
-    event
-  }).catch((e) => { void SortDiagnostics.error("content.send", e); });
+  // Old callbacks can outlive Stop or extension reload. Never send their data.
+  if (extensionContextLost || currentRecordingId !== recordingId) return;
+  const failed = (error) => {
+    if (contextIsInvalid(error)) retireInvalidContext();
+    else void SortDiagnostics.error("content.send", error);
+  };
+  try {
+    if (!chrome.runtime.id) { retireInvalidContext(); return; }
+    Promise.resolve(chrome.runtime.sendMessage({type: "recordEvent", recordingId, event}))
+      .then(response => {
+        if (response?.ok === false && currentRecordingId === recordingId) {
+          initializationGeneration++;
+          teardown();
+        }
+      }).catch(failed);
+  } catch (error) { failed(error); }
 }
 
 // ---- <video> feed frame capture --------------------------------------------
@@ -1892,3 +1937,5 @@ function debounce(func, wait) {
     timeout = setTimeout(() => func(...args), wait);
   };
 }
+
+})(); // Isolated, repeat-safe content-script scope.
