@@ -1,5 +1,5 @@
-// content.js - Captures user interactions + rrweb DOM recording
-// Loaded with run_at=document_start. lib/rrweb.min.js is loaded before this file.
+// content.js - Captures structured interactions, navigation and network events.
+// Loaded at document_start; screen video is recorded separately by capture.js.
 
 // Guard: with programmatic re-injection (orphan recovery) this file can be
 // evaluated twice in the same page. The second evaluation must be a no-op.
@@ -8,7 +8,6 @@ if (window.__mtrContentLoaded) return;
 window.__mtrContentLoaded = true;
 
 let currentRecordingId = null;
-let rrwebStopFn = null;
 
 // Each async initialization must still belong to the current live session.
 let initializationGeneration = 0;
@@ -61,13 +60,7 @@ function retireInvalidContext() {
 
 function teardown() {
   currentRecordingId = null;
-  stopCanvasFrameLoop();
-  stopVideoFrameLoop();
-  // Stop rrweb
-  if (typeof rrwebStopFn === "function") {
-    try { rrwebStopFn(); } catch (e) {}
-    rrwebStopFn = null;
-  }
+  stopVideoFeedWatcher();
   // Tell the page-world WS hook to stop streaming frames.
   try { stopWsBridge(); } catch (e) {}
   currentRecordingId = null;
@@ -80,10 +73,7 @@ function initialize(recordingId) {
   }
   currentRecordingId = recordingId;
 
-  // LEAN MODE (v2.0): visual replay is handled by a separate screen recorder.
-  // This extension now records ONLY the action/timeline data: clicks, inputs,
-  // navigation, tab switches, network/WS ground truth. No rrweb DOM
-  // stream, no canvas/video frame capture -> small files, no replay bugs.
+  // Capture the structured timeline here. Screen video is handled by capture.js.
   startCustomRecorder(recordingId);
   whenBodyReady(() => {
     // Still needed: Flutter semantics gives real labels to click targets.
@@ -93,82 +83,14 @@ function initialize(recordingId) {
   });
 }
 
-// rrweb takes its ONE initial full snapshot the instant record() is called. If
-// recording starts on the login page, that snapshot is the login DOM; the app
-// then auto-navigates to the feed, and the feed route replays only from
-// incremental mutations layered on the login snapshot. Evidence shows a session
-// that STARTED on the feed replays every route fine, so incremental replay is
-// reliable ONCE a good base exists. To give login-start sessions that same
-// good base, we take exactly ONE additional full snapshot after the first app
-// view has settled (non-empty, stable body). This is a single, well-timed
-// snapshot - NOT a per-route checkout - so it doesn't trigger the mid-stream
-// checkout blank-replay problem.
-let baseSnapshotDone = false;
-let routeChangedSinceStart = false;
-function scheduleBaseSnapshotOnce() {
-  if (baseSnapshotDone) return;
-  if (!(window.rrweb && window.rrweb.record && window.rrweb.record.takeFullSnapshot)) return;
-  // ONLY arm this for sessions that START on the login page. A session that
-  // starts anywhere in the app already has a good base snapshot, and ANY later
-  // route change (e.g. clicking History) would otherwise fire a mid-stream
-  // full snapshot -- which is exactly the thing that turns the replay white
-  // from that point on. Evidence: test B (start on feed, click History) went
-  // white at the History click with the previous gate.
-  // DISABLED (v1.24.0): mid-stream full snapshots re-serialize the DOM with
-  // fresh node ids; the replayer then hits "Node with id ... not found" and
-  // mutation exceptions -> artifacts/misplaced elements after login (test A).
-  // The original login-start whiteness this tried to fix was actually caused
-  // by the recorder's t.matches crash (fixed in v1.23.0), so pure incremental
-  // recording is both sufficient and the only mode that replays cleanly.
-  baseSnapshotDone = true; return;
-  let attempts = 0, lastSize = -1, stable = 0;
-  const check = () => {
-    if (baseSnapshotDone) return;
-    // Only needed when the view changed AFTER recording began (login -> app
-    // auto-navigation). If no route change happened, the initial snapshot is
-    // already the app view -> taking another is pointless and risks a
-    // mid-stream rebuild, so we keep waiting (capped) and skip if it never navigates.
-    attempts += 1;
-    let size = 0;
-    try { size = document.body ? (document.body.innerHTML || "").length : 0; } catch (e) {}
-    if (size > 500 && size === lastSize) stable += 1; else stable = 0;
-    lastSize = size;
-    if (!routeChangedSinceStart) {
-      if (attempts >= 20) { baseSnapshotDone = true; return; } // never navigated: skip
-      setTimeout(check, 400); return;
-    }
-    // On a video-feed route, also require the player's <video> to be mounted so
-    // the snapshot captures the feed component (not an empty shell -> white).
-    let feedReady = true;
-    try { if (isVideoFeedPage()) feedReady = hasPlayableVideo(); } catch (e) {}
-    if ((size > 500 && feedReady && stable >= 2) || attempts >= 40) {
-      baseSnapshotDone = true;
-      // isCheckout=false: this is an ADDITIONAL full snapshot on the same
-      // event stream, not a checkout boundary. It gives the replayer a fresh,
-      // complete DOM state to apply subsequent mutations onto.
-      try { window.rrweb.record.takeFullSnapshot(); } catch (e) {}
-      return;
-    }
-    setTimeout(check, 400);
-  };
-  setTimeout(check, 400);
-}
-
 function whenBodyReady(cb) {
   if (document.body) return cb();
   document.addEventListener("DOMContentLoaded", cb, { once: true });
 }
 
-// ---- Flutter (CanvasKit) support ---------------------------------------------
-// Flutter web paints the whole UI onto a <canvas>; the DOM is an empty shell.
-// Two consequences for us:
-//  1. Visual replay needs canvas snapshots (rrweb recordCanvas + the WebGL
-//     preserveDrawingBuffer wrap installed by ws-hook.js in the page world).
-//  2. There are no DOM labels -- but Flutter ships an invisible accessibility
-//     ("semantics") tree it builds on demand. We activate it exactly the way a
-//     screen reader does: by clicking the flt-semantics-placeholder. After
-//     that, every widget gets a positioned flt-semantics node with role +
-//     aria-label, which our click capture can resolve into real action labels.
+// ---- Flutter accessibility labels -------------------------------------------
+// Flutter paints its UI onto a canvas. Activate its accessibility tree so click
+// capture can resolve widgets into meaningful roles and labels.
 function isFlutterPage() {
   return !!document.querySelector("flutter-view, flt-glass-pane");
 }
@@ -182,105 +104,6 @@ function enableFlutterSemantics() {
   } catch (e) { /* ignore */ }
   // Flutter builds the tree asynchronously; nothing else to do -- semantics
   // nodes appear under flt-semantics-host and become the click targets.
-}
-
-// ---- Flutter canvas frame capture --------------------------------------------
-// rrweb's built-in canvas sampler (sampling.canvas) locates canvases with
-// document.querySelectorAll('canvas'), which does NOT pierce shadow roots.
-// Flutter's CanvasKit canvas lives inside the shadow root of flt-glass-pane,
-// so the sampler never finds it -> zero canvas frames -> white replay.
-// This loop finds canvases through shadow roots and emits frames as rrweb
-// custom events ("canvasFrame"), which player.js paints back onto the replayed
-// canvas. Readback works because ws-hook.js forces preserveDrawingBuffer:true.
-let canvasFrameTimer = null;
-let flutterDetectTimer = null;
-// Adaptive sampling: popups and dialogs appear right after user input, so we
-// capture at BURST rate (10 fps) for a short window after every click/key/
-// scroll, and at IDLE rate otherwise. Unchanged frames are deduped below, so
-// the extra ticks only cost data when pixels actually changed.
-const CANVAS_IDLE_MS = 250;         // ~4 fps baseline (was 500ms / 2 fps)
-const CANVAS_BURST_MS = 100;        // ~10 fps right after user input
-const BURST_WINDOW_MS = 2000;       // keep bursting this long after the last input
-let burstUntil = 0;                 // timestamp until which we sample at burst rate
-let lastCaptureAt = 0;
-const lastCanvasFrame = new WeakMap(); // canvas -> last dataURL (skip unchanged)
-
-// Any user input on a Flutter page = a popup/transition may be imminent.
-function noteUserActivity() {
-  burstUntil = Date.now() + BURST_WINDOW_MS;
-}
-
-function findCanvasesDeep(root, out) {
-  out = out || [];
-  if (!root || !root.querySelectorAll) return out;
-  root.querySelectorAll("canvas").forEach((c) => out.push(c));
-  root.querySelectorAll("*").forEach((el) => {
-    if (el.shadowRoot) findCanvasesDeep(el.shadowRoot, out);
-  });
-  return out;
-}
-
-function captureCanvasFrames() {
-  if (document.hidden) return;
-  const mirror = window.rrweb.record.mirror;
-  if (!mirror || !mirror.getId) return;
-  findCanvasesDeep(document).forEach((canvas) => {
-    if (!canvas.width || !canvas.height) return;
-    let dataURL;
-    try {
-      dataURL = canvas.toDataURL("image/webp", 0.5);
-    } catch (e) {
-      return; // tainted canvas etc.
-    }
-    if (!dataURL || dataURL === "data:," || lastCanvasFrame.get(canvas) === dataURL) return;
-    lastCanvasFrame.set(canvas, dataURL);
-    const id = mirror.getId(canvas);
-    if (id == null || id === -1) return; // not (yet) in the rrweb mirror
-    try {
-      window.rrweb.record.addCustomEvent("canvasFrame", { id, dataURL });
-    } catch (e) { /* recording stopped */ }
-  });
-}
-
-function startCanvasFrameLoop() {
-  if (canvasFrameTimer) return;
-  if (!window.rrweb || !window.rrweb.record || !window.rrweb.record.addCustomEvent) return;
-  // Every user input primes a 2s burst window so the frames bracketing a
-  // popup's appearance are captured, not skipped.
-  ["pointerdown", "pointerup", "click", "keydown", "wheel", "touchstart"].forEach((t) => {
-    document.addEventListener(t, noteUserActivity, { capture: true, passive: true });
-  });
-  // Tick at the burst rate; skip ticks while idle so CPU stays low between
-  // interactions. Dedup above means unchanged frames never hit the payload.
-  canvasFrameTimer = setInterval(() => {
-    const now = Date.now();
-    const interval = now < burstUntil ? CANVAS_BURST_MS : CANVAS_IDLE_MS;
-    if (now - lastCaptureAt < interval - CANVAS_BURST_MS / 2) return;
-    lastCaptureAt = now;
-    captureCanvasFrames();
-  }, CANVAS_BURST_MS);
-}
-
-function stopCanvasFrameLoop() {
-  if (canvasFrameTimer) {
-    clearInterval(canvasFrameTimer); canvasFrameTimer = null;
-    ["pointerdown", "pointerup", "click", "keydown", "wheel", "touchstart"].forEach((t) => {
-      document.removeEventListener(t, noteUserActivity, { capture: true });
-    });
-  }
-  if (flutterDetectTimer) { clearInterval(flutterDetectTimer); flutterDetectTimer = null; }
-}
-
-// Flutter bootstraps asynchronously: <flutter-view> may not exist yet when we
-// initialize. Poll briefly; start the frame loop as soon as Flutter appears.
-// Non-Flutter pages (Scheduler Dashboard) never start the loop -> zero overhead.
-function watchForFlutterCanvas() {
-  if (flutterDetectTimer) return;
-  // SPA-safe: a Flutter view can appear after a client-side route change, so we
-  // poll persistently and start the canvas loop the moment one shows up.
-  const tick = () => { if (isFlutterPage()) startCanvasFrameLoop(); };
-  tick();
-  flutterDetectTimer = setInterval(tick, 1000);
 }
 
 function emit(recordingId, event) {
@@ -302,23 +125,10 @@ function emit(recordingId, event) {
   } catch (error) { failed(error); }
 }
 
-// ---- <video> feed frame capture --------------------------------------------
-// Camera pages render the live stream into an HTML <video> element fed by a
-// blob:/MSE/WebRTC source. rrweb records the <video> TAG but never its pixels,
-// and the blob URL dies with the session -> replay shows the UI but a BLACK
-// video. To make the feed visible offline we periodically draw the <video>'s
-// current frame onto an offscreen canvas, encode it as webp, and emit it as an
-// rrweb custom event ("videoFrame"). player.js paints these onto an overlay
-// positioned over the replayed <video>.
-//
-// Approved capture settings: ~5 fps steady, webp quality 0.5.
+// ---- Live-video detection for WebSocket filtering ----------------------------
+// Detect video elements only; this does not capture or serialize their pixels.
 let wsSuppressedForVideo = false;
-let videoFrameTimer = null;
 let videoDetectTimer = null;
-const VIDEO_FRAME_MS = 200;         // ~5 fps steady
-const VIDEO_QUALITY = 0.5;          // webp, matches canvas frames
-const videoScratch = document.createElement("canvas");
-const lastVideoFrame = new WeakMap(); // video -> last dataURL (skip unchanged)
 
 function findVideosDeep(root, out) {
   out = out || [];
@@ -336,69 +146,21 @@ function hasPlayableVideo() {
   );
 }
 
-function captureVideoFrames() {
-  if (document.hidden) return;
-  const mirror = window.rrweb && window.rrweb.record && window.rrweb.record.mirror;
-  if (!mirror || !mirror.getId) return;
-  findVideosDeep(document).forEach((video) => {
-    const w = video.videoWidth, h = video.videoHeight;
-    if (!w || !h) return;                 // metadata not ready / no frame yet
-    if (video.readyState < 2) return;     // HAVE_CURRENT_DATA
-    let dataURL;
-    try {
-      // Cap the encoded size: downscale very large feeds to <=640px wide.
-      const scale = w > 640 ? 640 / w : 1;
-      const cw = Math.max(1, Math.round(w * scale));
-      const ch = Math.max(1, Math.round(h * scale));
-      if (videoScratch.width !== cw) videoScratch.width = cw;
-      if (videoScratch.height !== ch) videoScratch.height = ch;
-      const ctx = videoScratch.getContext("2d");
-      ctx.drawImage(video, 0, 0, cw, ch);
-      dataURL = videoScratch.toDataURL("image/webp", VIDEO_QUALITY);
-    } catch (e) {
-      return; // tainted (cross-origin) source etc.
-    }
-    if (!dataURL || dataURL === "data:," || lastVideoFrame.get(video) === dataURL) return;
-    lastVideoFrame.set(video, dataURL);
-    const id = mirror.getId(video);
-    if (id == null || id === -1) return; // not (yet) in the rrweb mirror
-    try {
-      window.rrweb.record.addCustomEvent("videoFrame", { id, dataURL, w, h });
-    } catch (e) { /* recording stopped */ }
-  });
-}
-
-function startVideoFrameLoop() {
-  if (videoFrameTimer) return;
-  if (!window.rrweb || !window.rrweb.record || !window.rrweb.record.addCustomEvent) return;
-  videoFrameTimer = setInterval(captureVideoFrames, VIDEO_FRAME_MS);
-}
-
-function stopVideoFrameLoop() {
-  if (videoFrameTimer) { clearInterval(videoFrameTimer); videoFrameTimer = null; }
+function stopVideoFeedWatcher() {
   if (videoDetectTimer) { clearInterval(videoDetectTimer); videoDetectTimer = null; }
 }
 
-// A <video> feed may not exist / may not have frames yet when we initialize
-// (the stream connects asynchronously). Poll briefly and start capturing as
-// soon as a playable video appears. Pages with no video never start the loop.
 function watchForVideoFeed() {
   if (videoDetectTimer) return;
-  // The camera app is a single-page app (UniFi Protect): login -> dashboard ->
-  // camera feed are all in-place route changes on ONE document. A <video> only
-  // appears once the feed route is opened, possibly minutes after recording
-  // starts. So we poll PERSISTENTLY (no give-up) and (re)start the capture loop
-  // whenever a playable video appears. The frame loop itself no-ops on pages
-  // with no video, so this is cheap.
+  // Keep watching across SPA routes: suppress media relay on a feed and
+  // resume action capture after the feed closes. The app's traffic is untouched.
   const tick = () => {
     if (hasPlayableVideo()) {
-      // LEAN MODE: no frame capture; the detector only manages WS suppression.
       // On the live camera route, stop RELAYING WS media frames to the recorder
       // (they're binary/truncated and bloat the file). This never touches the
       // app's real traffic - only our postMessage relay.
       if (!wsSuppressedForVideo) { wsSuppressedForVideo = true; try { stopWsBridge(); } catch (e) {} }
     } else {
-      stopVideoFrameLoop_soft(); // feed closed -> pause capture, keep watching
       // Left the feed: resume WS action capture for normal pages.
       if (wsSuppressedForVideo) {
         wsSuppressedForVideo = false;
@@ -408,40 +170,6 @@ function watchForVideoFeed() {
   };
   tick();
   videoDetectTimer = setInterval(tick, 1000);
-}
-
-// Stop the capture loop but KEEP the detector running (used when the feed route
-// is left, so we resume capturing if the user navigates back to a camera).
-function stopVideoFrameLoop_soft() {
-  if (videoFrameTimer) { clearInterval(videoFrameTimer); videoFrameTimer = null; }
-}
-
-// ---- rrweb DOM recording -----------------------------------------------------
-// Defensive realm patch for the RECORDER. The Protect UI feeds rrweb's mutation
-// observer nodes that lack Element APIs (shadow roots / text nodes reached via
-// maskTextSelector + blockSelector parent walks). rrweb then throws
-// "t.matches is not a function" INSIDE its MutationObserver callback, the
-// observer dies, and from that moment NOTHING is recorded -> every view after
-// the crash (History, back-to-live) replays white. Content scripts get their
-// own prototype wrappers, and rrweb runs in THIS world, so patching here fixes
-// rrweb without touching the page's own realm.
-(function patchRecorderRealm() {
-  try {
-    const noop = function () { return false; };
-    if (typeof Node !== "undefined" && !Node.prototype.matches) Node.prototype.matches = noop;
-    if (typeof CharacterData !== "undefined" && !CharacterData.prototype.matches) CharacterData.prototype.matches = noop;
-    if (typeof DocumentFragment !== "undefined" && !DocumentFragment.prototype.matches) DocumentFragment.prototype.matches = noop;
-    if (typeof Document !== "undefined" && !Document.prototype.matches) Document.prototype.matches = noop;
-    if (typeof ShadowRoot !== "undefined" && !ShadowRoot.prototype.matches) ShadowRoot.prototype.matches = noop;
-    if (typeof Node !== "undefined" && !Node.prototype.closest) Node.prototype.closest = function () { return null; };
-  } catch (e) { /* never break the page over this */ }
-})();
-
-function startRRWeb(recordingId) {
-  // LEAN MODE: rrweb DOM recording disabled. Kept as a stub so init paths and
-  // the player's data format stay compatible. Visual capture = external screen
-  // recorder.
-  emit(recordingId, { type: "rrwebStatus", available: false, leanMode: true });
 }
 
 // ---- Lightweight structured event capture ------------------------------------
@@ -507,27 +235,11 @@ function startCustomRecorder(recordingId) {
     emit(recordingId, { type: "visibilityChange", hidden: document.hidden, url: window.location.href });
   });
 
-  // On SPA route changes the recorder context stays alive, but a NEW view
-  // (dashboard -> camera feed) may mount a <video>/Flutter canvas that our
-  // one-time init never saw. The persistent detectors (watchFor*) already keep
-  // polling, but we also nudge them here so capture starts promptly and, on the
-  // camera feed route, WS media frames get suppressed.
+  // Keep labels, page metadata and media filtering current across SPA routes.
   function onSpaRouteChange() {
-    routeChangedSinceStart = true;
-    // LEAN MODE: no canvas/video capture to (re)arm; just keep click labels
-    // working on newly mounted Flutter views.
     try { enableFlutterSemantics(); } catch (e) {}
     try { scheduleSemanticsTree(recordingId, "route"); } catch (e) {}
     try { schedulePageTitle(recordingId); } catch (e) {}
-    // NOTE: We deliberately do NOT inject a full snapshot on route changes.
-    // Mid-stream checkout snapshots are a known cause of blank replays in rrweb
-    // (the replayer rebuilds from the checkpoint and later incremental events
-    // fail to apply). Evidence: a session that STARTED with the feed loaded
-    // replays every route (login/history/live) correctly from incremental
-    // mutations alone. So incremental replay is reliable here; the checkout was
-    // the thing breaking the live route. The camera PIXELS come from our
-    // videoFrame overlay, not the DOM snapshot, so no checkout is needed for the
-    // feed to be visible.
     // Suppress WS relay if we just landed on a camera-feed route.
     try {
       if (!wsSuppressedForVideo) {
@@ -568,7 +280,7 @@ function startCustomRecorder(recordingId) {
   });
 
   // Safety net: some routers change the view without a history API call we can
-  // wrap. Poll the URL so no route (and thus no fresh snapshot) is ever missed.
+  // wrap. Poll the URL to record those route changes too.
   let lastHref = window.location.href;
   setInterval(() => {
     if (window.location.href !== lastHref) {
@@ -582,7 +294,7 @@ function startCustomRecorder(recordingId) {
   installWsBridge(recordingId);
   // Camera pages flood the WS relay with binary media frames; this persistent
   // detector suppresses the relay while a live <video> is on screen and
-  // resumes it when the user leaves the feed. (Kept in lean mode for file size.)
+  // resumes it when the user leaves the feed.
   watchForVideoFeed();
 }
 
@@ -593,10 +305,9 @@ function startCustomRecorder(recordingId) {
 // and relays sent/received frames back to us via window.postMessage.
 // A camera-feed page's WebSocket carries the video media stream (MSE/WebRTC
 // chunks). Those frames are binary, truncated in-page, and CANNOT be
-// reconstructed for offline replay -- they only bloat the recording (the
-// 17MB / 2562-event sessions were ~99% these frames). We reconstruct the feed
-// visually via videoFrame capture instead, so on video-feed pages we skip WS
-// recording entirely. All other pages (NiceGUI/Socket.IO actions) keep it.
+// reconstructed by the timeline player. Screen recording supplies the visuals,
+// so video-feed pages skip WS recording to avoid retaining these media frames.
+// Other pages (including NiceGUI/Socket.IO actions) keep WS capture.
 function isVideoFeedPage() {
   return hasPlayableVideo() ||
     findVideosDeep(document).some((v) => (v.currentSrc || v.src || "").startsWith("blob:"));
@@ -623,10 +334,9 @@ function installWsBridge(recordingId) {
   setTimeout(() => { if (!wsSuppressedForVideo) maybeSuppress(); }, 1500);
 
   // The page-world WebSocket hook (ws-hook.js) is already installed at
-  // document_start via a MAIN-world content script (see manifest). It buffers
-  // frames from page load. Here we just:
-  //   1. Listen for relayed frames + the hook's install-confirmation, and
-  //   2. Tell the hook to start streaming (and flush its buffer).
+  // document_start via a MAIN-world content script (see manifest). It retains
+  // no frames before Start. Here we listen for live frames and the hook's
+  // confirmation, then tell it to begin relaying new frames.
   let bridgeConfirmed = false;
 
   window.addEventListener("message", (e) => {
@@ -649,7 +359,7 @@ function installWsBridge(recordingId) {
         direction: e.data.direction, // "send" | "receive"
         url: e.data.url || null,
         payload: e.data.payload,     // string (truncated in-page for safety)
-        buffered: e.data.buffered === true, // true = captured before Start
+        buffered: e.data.buffered === true, // legacy format flag; current hook sends false
         pageUrl: window.location.href
       });
     }
