@@ -112,7 +112,7 @@ btn.addEventListener("click", async () => {
     void SortDiagnostics.error("capture.choose", e);
     btn.disabled = false;
     const msg = e && e.name === "NotAllowedError"
-      ? "You cancelled the picker. Click again to share your screen."
+      ? "Recording cancelled. No timeline or video will be recorded."
       : String((e && e.message) || e);
     setStatus(msg, true);
     chrome.runtime.sendMessage({ type: "captureFailed", error: msg }).catch(() => {});
@@ -258,7 +258,7 @@ async function stopCapture() {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.target !== "capture") return;
+  if (!msg || msg.target !== "capture" || !SortSecurity.worker(sender)) return false;
   if (msg.type === "stopCapture") {
     stopCapture().then(sendResponse);
     return true;

@@ -30,13 +30,7 @@ document.getElementById("btnRecord").addEventListener("click", () => {
       }
       if (res && res.success) {
         setSessionUI(true);
-        // A capture failure must be loud: the session runs either way, but the
-        // operator should not find out at replay time that there is no video.
-        if (res.captureWarning) {
-          showToast("Recording started WITHOUT video: " + res.captureWarning, 6000);
-        } else {
-          showToast(res.videoCapturing ? "Recording started with video" : "Recording started");
-        }
+        showToast("Recording started with video");
         loadRecordings();
       } else {
         showToast(res?.error || "Could not start");
@@ -255,6 +249,8 @@ function deleteRecording(id) {
   });
 }
 
+let settingsLoaded = false;
+
 // ---- Settings ----------------------------------------------------------------
 // Everything the ticket dialog needs lives in one config object, so the dialog
 // can read it with a single getConfig and never has to ask the operator twice.
@@ -266,13 +262,16 @@ function currentConfig() {
   return withFixedSettings({
     downloadFolder: val("downloadFolder") || "Recordings",
     sipgateName: val("sipgateName"),
-    // callTrigger (address, key, interval) is fixed in defaults.js.
+    callTrigger: {url: val("callStateUrl"), apiKey: val("callStateToken")},
     theme: currentTheme,
     odoo: { username: val("odooUser"), apiKey: val("odooKey") }
   });
 }
 
 document.getElementById("saveConfig").addEventListener("click", () => {
+  if (!settingsLoaded) { showToast("Settings are still loading."); return; }
+  const endpoint = val("callStateUrl");
+  if (endpoint && !validCallEndpoint(endpoint)) { showToast("Enter an HTTP or HTTPS endpoint without embedded credentials."); return; }
   // Required, because it is the only thing that says whose session a shared
   // bundle is. Everything else here has a sane default; this cannot.
   if (!val("sipgateName")) {
@@ -280,8 +279,8 @@ document.getElementById("saveConfig").addEventListener("click", () => {
     return;
   }
   clearNameFlag();
-  chrome.runtime.sendMessage({ type: "saveConfig", config: currentConfig() }, () => {
-    showToast("Settings saved");
+  chrome.runtime.sendMessage({ type: "saveConfig", config: currentConfig() }, (res) => {
+    showToast(res?.success ? "Settings saved" : (res?.error || "Settings were not saved"));
   });
 });
 
@@ -320,7 +319,7 @@ document.querySelectorAll("[data-theme-choice]").forEach((b) => {
   // cannot preview.
   b.addEventListener("click", () => {
     markTheme(b.dataset.themeChoice);
-    chrome.runtime.sendMessage({ type: "saveConfig", config: currentConfig() });
+    chrome.runtime.sendMessage({ type: "setTheme", theme: currentTheme });
   });
 });
 
@@ -524,10 +523,11 @@ document.getElementById("testCall").addEventListener("click", async () => {
   const btn = document.getElementById("testCall");
   const out = document.getElementById("callStatus");
   const cfg = currentConfig();
-  if (!cfg.callTrigger.url) {
-    out.textContent = "No call-state address is configured in this build.";
+  if (!validCallEndpoint(cfg.callTrigger.url)) {
+    out.textContent = "Enter the call-state endpoint in Settings.";
     return;
   }
+  if (!cfg.callTrigger.apiKey) { out.textContent = "Enter the call-state token before testing."; return; }
   if (!cfg.sipgateName) {
     flagNameField("Enter your Sipgate name first: the test matches calls against it.");
     return;
@@ -576,11 +576,20 @@ document.getElementById("testCall").addEventListener("click", async () => {
 
 function loadConfig() {
   chrome.runtime.sendMessage({ type: "getConfig" }, (config) => {
+    if (chrome.runtime.lastError || !config || config.success === false) {
+      settingsLoaded = false;
+      showToast("Settings could not be loaded. Reopen SORT before saving.", 5000);
+      return;
+    }
     const c = withFixedSettings(config);
     document.getElementById("downloadFolder").value = c.downloadFolder;
     document.getElementById("sipgateName").value = c.sipgateName || "";
     document.getElementById("odooUser").value = c.odoo?.username || "";
     document.getElementById("odooKey").value = c.odoo?.apiKey || "";
+    document.getElementById("callStateUrl").value = c.callTrigger?.url || "";
+    document.getElementById("callStateUrl").readOnly = !!FIXED.callTrigger.url;
+    document.getElementById("callStateToken").value = c.callTrigger?.apiKey || "";
+    settingsLoaded = true;
     markTheme(c.theme);
   });
 }
@@ -656,3 +665,55 @@ document.getElementById("exportSupportLogs").addEventListener("click", async () 
     status.textContent = "Could not export support logs. Retry; if this continues, check SORT's errors in chrome://extensions.";
   } finally { button.disabled = false; }
 });
+
+function validCallEndpoint(value) {
+  try { const u = new URL(value); return ["http:", "https:"].includes(u.protocol) && !u.username && !u.password; } catch (_) { return false; }
+}
+document.getElementById("clearCredentials").addEventListener("click", async () => {
+  if (!confirm("Remove the saved Odoo API key and shared call-state token from this Chrome profile?")) return;
+  try {
+    const res = await chrome.runtime.sendMessage({type: "clearCredentials"});
+    if (!res?.success) throw new Error();
+    document.getElementById("odooKey").value = "";
+    document.getElementById("callStateToken").value = "";
+    showToast("Saved tokens removed. Call polling is disabled until configured again.", 5000);
+  } catch (_) { showToast("Tokens could not be removed. Try again."); }
+});
+let updateBusy = false;
+async function refreshUpdatePanel() {
+  if (updateBusy) return;
+  try {
+    const s = await chrome.runtime.sendMessage({type: "getUpdateStatus"});
+    if (!s?.success) return;
+    document.getElementById("updatePanel").hidden = !s.pending;
+    if (!s.pending) return;
+    document.getElementById("updateTitle").textContent = "SORT " + s.pending + " is ready";
+    document.getElementById("updateMessage").textContent = s.busy || (s.later
+      ? "You chose Later. Restart when your work is finished." : "Restart SORT to apply the downloaded update.");
+    document.getElementById("restartUpdate").disabled = !!s.busy;
+  } catch (_) {}
+}
+document.getElementById("checkUpdate").addEventListener("click", async () => {
+  const btn = document.getElementById("checkUpdate"), out = document.getElementById("updateCheckStatus");
+  btn.disabled = true; out.textContent = "Checking for updates...";
+  try {
+    const s = await chrome.runtime.sendMessage({type: "checkForUpdate"});
+    out.textContent = !s?.success ? (s?.error || "Update check unavailable.") : s.pending ? "An update is ready. See the notice above."
+      : s.checkResult === "throttled" ? "Checked recently. Try again later; Chrome limits update checks."
+      : s.checkResult === "no_update" ? "No newer Store version was found." : "No update result is available.";
+  } catch (_) { out.textContent = "Update check failed. Try again later."; }
+  finally { btn.disabled = false; await refreshUpdatePanel(); }
+});
+document.getElementById("restartUpdate").addEventListener("click", async () => {
+  updateBusy = true; document.getElementById("restartUpdate").disabled = true;
+  document.getElementById("updateMessage").textContent = "Checking that SORT can restart safely...";
+  try {
+    const s = await chrome.runtime.sendMessage({type: "restartForUpdate"});
+    if (!s?.success) { showToast(s?.error || "Restart unavailable.", 5000); updateBusy = false; await refreshUpdatePanel(); }
+  } catch (_) { updateBusy = false; document.getElementById("updateMessage").textContent = "SORT may be restarting. Reopen the popup to check."; }
+});
+document.getElementById("deferUpdate").addEventListener("click", async () => {
+  try { await chrome.runtime.sendMessage({type: "deferUpdate"}); await refreshUpdatePanel(); } catch (_) {}
+});
+void refreshUpdatePanel();
+setInterval(refreshUpdatePanel, 3000);

@@ -348,7 +348,8 @@ async function findJsonPaths(config) {
 probeOnce = SortDiagnostics.trace("poll.probe", probeOnce);
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.target !== "callpoll") return false;
+  if (!message || message.target !== "callpoll") return false;
+  if (!SortSecurity.worker(sender)) return false;
   switch (message.type) {
     case "configure":
       start(message.config);

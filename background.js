@@ -4,7 +4,9 @@
 
 // Fixed deployment values (upload host, Odoo host/db/model, reminder interval).
 importScripts("build-info.js", "diagnostics-core.js", "diagnostics.js");
-importScripts("defaults.js");
+importScripts("defaults.js", "security.js", "updates.js");
+// Content scripts must not write call-trigger storage or read diagnostic state.
+chrome.storage.local.setAccessLevel({accessLevel: "TRUSTED_CONTEXTS"}).catch(() => {});
 // Shared with the offscreen poller: one copy of the "is this call mine" rule.
 importScripts("callmatch.js");
 
@@ -53,14 +55,8 @@ let pendingCaptureWarning = null; // capture error to report back to the popup
 
 // Screen capture host: a small extension WINDOW (capture.html).
 //
-// Why not chrome.desktopCapture: chooseDesktopMedia() requires a targetTab on a
-// SECURE scheme. The RKA machines are served over plain http://, so anchoring
-// the picker to the operator's tab fails with "URL scheme for the specified tab
-// is not secure". An extension page is chrome-extension:// (secure) and can call
-// getDisplayMedia() itself, which needs no targetTab at all.
-//
-// Why a visible window and not the offscreen document: getDisplayMedia() only
-// runs after a genuine user gesture, which an offscreen document cannot supply.
+// A visible extension window anchors the desktopCapture picker on a secure
+// chrome-extension origin and hosts the video encoder.
 let captureWindowId = null;
 let capturePending = null;   // resolver for the in-flight startCapture()
 // Set the moment the window is put away, so any later focus attempt -- from a
@@ -103,8 +99,9 @@ async function minimizeCaptureWindow() {
 
 async function closeCaptureWindow() {
   if (captureWindowId == null) return;
-  try { await chrome.windows.remove(captureWindowId); } catch (e) {}
+  const closingId = captureWindowId;
   captureWindowId = null;
+  try { await chrome.windows.remove(closingId); } catch (e) {}
   captureMinimized = false;
 }
 
@@ -118,7 +115,7 @@ function startCapture(recordingId) {
 
     // No response at all (window closed before choosing) must not hang Start.
     const timer = setTimeout(() => {
-      done({ success: false, error: "No source chosen. Recording continues without video." });
+      done({ success: false, error: "No source chosen. Recording cancelled." });
     }, 120000);
     const wrapped = (v) => { clearTimeout(timer); done(v); };
     capturePending = wrapped;
@@ -149,10 +146,21 @@ async function stopCapture(recordingId) {
 }
 
 async function saveConfig(config) {
+  const endpoint = config?.callTrigger?.url || "";
+  if (endpoint) {
+    const u = new URL(endpoint);
+    if (!["http:", "https:"].includes(u.protocol) || u.username || u.password)
+      throw new Error("Use an HTTP or HTTPS call-state endpoint without embedded credentials.");
+  }
   const db = await initDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(CONFIG_STORE, "readwrite");
-    tx.objectStore(CONFIG_STORE).put({ key: "recordingConfig", value: withFixedSettings(config) });
+    tx.objectStore(CONFIG_STORE).put({ key: "recordingConfig", value: withFixedSettings({
+      theme: config?.theme, downloadFolder: String(config?.downloadFolder || "Recordings"),
+      sipgateName: String(config?.sipgateName || "").trim(),
+      callTrigger: {url: String(config?.callTrigger?.url || "").trim(), apiKey: String(config?.callTrigger?.apiKey || "").trim()},
+      odoo: {username: String(config?.odoo?.username || "").trim(), apiKey: String(config?.odoo?.apiKey || "").trim()}
+    }) });
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -227,6 +235,9 @@ function makeSessionId() {
 let sessionStartPromise = null;
 let pendingCallEndPrompt = false;
 async function startSession(options) {
+  if (SortUpdates.locked && options?.trigger === "call") SortUpdates.cancelRestart();
+  if (SortUpdates.locked) return {success: false, error: "SORT is restarting for an update."};
+  if (sessionStopPromise) return {success: false, error: "The previous recording is still saving."};
   if (sessionStartPromise) {
     const result = await sessionStartPromise;
     if (result.success && activeSession && options && options.trigger === "call" &&
@@ -276,12 +287,20 @@ async function startSessionImpl(options) {
   }
 
   // Screen capture first: the operator picks a window BEFORE the clock starts,
-  // so the video's zero point and the timeline's zero point stay aligned. If
-  // they cancel the picker we still record the timeline.
+  // so the video's zero point and the timeline's zero point stay aligned.
+  // Cancelling or failing the picker cancels the entire recording attempt.
   const sessionId = makeSessionId();
 
   // Always captured. The picker is the only step the operator has to complete.
   const capture = await startCapture(sessionId);
+  if (!capture.success) {
+    await closeCaptureWindow();
+    clearContinueAlarm();
+    await closeContinueWindow();
+    updateBadge(false);
+    pendingCaptureWarning = null;
+    return {success: false, cancelled: true, error: capture.error || "Recording cancelled. Nothing was recorded."};
+  }
 
   activeSession = {
     id: sessionId,
@@ -429,7 +448,13 @@ async function initializeTab(tabId) {
   }
 }
 
+let sessionStopPromise = null;
 async function stopSession(options) {
+  if (sessionStopPromise) return sessionStopPromise;
+  sessionStopPromise = stopSessionImpl(options);
+  try { return await sessionStopPromise; } finally { sessionStopPromise = null; }
+}
+async function stopSessionImpl(options) {
   if (!activeSession) return { success: false, error: "No active session" };
 
   activeSession.endTime = Date.now();
@@ -938,7 +963,7 @@ async function consumeTrigger(t) {
 // call is being watched. Triggers arrive over it directly -- same shape, same
 // nonce, same de-duplication as the message and storage paths.
 chrome.runtime.onConnect.addListener((p) => {
-  if (p.name !== "callpoll-keepalive") return;
+  if (p.name !== "callpoll-keepalive" || !SortSecurity.page(p.sender, ["offscreen.html"])) return;
   trail("watcher connected");
   p.onMessage.addListener((msg) => {
     consumeTrigger(Object.assign({ _via: "port" }, msg));
@@ -970,7 +995,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // whenever settings are saved, so a changed name or URL takes effect at once.
 async function syncCallPoller() {
   const config = await getConfig();
-  const enabled = !!(config.callTrigger && config.callTrigger.url && (config.sipgateName || "").trim());
+  const enabled = !!(config.callTrigger && /^https?:\/\//.test(config.callTrigger.url || "") && config.callTrigger.apiKey && (config.sipgateName || "").trim());
   try {
     await ensureOffscreen();
   } catch (e) {
@@ -1003,7 +1028,7 @@ const POLL_KEEPALIVE_ALARM = "callPollKeepalive";
 
 async function ensureCallPollerAlive() {
   const config = await getConfig();
-  if (!(config.callTrigger && config.callTrigger.url && (config.sipgateName || "").trim())) return;
+  if (!(config.callTrigger && /^https?:\/\//.test(config.callTrigger.url || "") && config.callTrigger.apiKey && (config.sipgateName || "").trim())) return;
   let alive = false;
   try {
     const res = await chrome.runtime.sendMessage({ target: "callpoll", type: "status" });
@@ -1048,11 +1073,42 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.alarms.create(POLL_KEEPALIVE_ALARM, { periodInMinutes: 1 });
 syncCallPoller();
 
+const WORKER_MESSAGE_PAGES = {
+  startSession: ["popup.html"], stopSession: ["popup.html"],
+  callStarted: ["offscreen.html"], callStateStarted: ["offscreen.html"],
+  callStateEnded: ["offscreen.html"], callStateAdopted: ["offscreen.html"], callPollError: ["offscreen.html"],
+  syncCallPoller: ["popup.html"], callPollerStatus: ["popup.html"], probeCallEndpoint: ["popup.html"],
+  captureStarted: ["capture.html"], captureFailed: ["capture.html"], captureEndedByUser: ["capture.html"],
+  reminderResponse: ["continue.html"], keepRecording: ["continue.html"], promptContinue: ["popup.html"],
+  nextTicketSequence: ["ticket.html"], finishRecording: ["ticket.html"], downloadVideo: ["ticket.html"],
+  openTicketDialog: ["popup.html"], getShortcut: ["popup.html"], getSessionStatus: ["popup.html"],
+  getRecordings: ["popup.html", "ticket.html", "player.html"], deleteRecording: ["popup.html"],
+  getConfig: ["popup.html", "ticket.html", "player.html", "import.html", "continue.html", "capture.html"],
+  saveConfig: ["popup.html"], clearCredentials: ["popup.html"], setTheme: ["popup.html"],
+  exportRecording: ["popup.html", "player.html"], consumeNameWarning: ["popup.html"],
+  openImport: ["popup.html"], importFinished: ["import.html"],
+  getUpdateStatus: ["popup.html"], checkForUpdate: ["popup.html"], restartForUpdate: ["popup.html"],
+  deferUpdate: ["popup.html"]
+};
+function allowWorkerMessage(message, sender) {
+  if (!message || typeof message.type !== "string") return false;
+  if (message.type === "recordEvent" || message.type === "isRecordingSession") return SortSecurity.content(sender);
+  return SortSecurity.page(sender, WORKER_MESSAGE_PAGES[message.type] || []);
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Messages addressed to another context (the offscreen document, the capture
   // window) travel through every listener in the extension. Ignore them here or
   // an unhandled type in this switch answers on their behalf.
   if (message && message.target && message.target !== "worker") return false;
+  if (!allowWorkerMessage(message, sender)) {
+    if (message && WORKER_MESSAGE_PAGES[message.type]) sendResponse({success: false, error: "Not authorized"});
+    return false;
+  }
+  if (SortUpdates.locked && !["getUpdateStatus", "getSessionStatus", "callStateStarted", "callStateEnded", "callStateAdopted", "callPollError"].includes(message.type)) {
+    sendResponse({success: false, error: "SORT is restarting for an update. Try again shortly."});
+    return false;
+  }
   switch (message.type) {
 
     case "startSession":
@@ -1152,14 +1208,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case "captureEndedByUser":
       void SortDiagnostics.emit("capture.stop", "cancelled");
-      if (activeSession && activeSession.video && activeSession.video.captured) {
-        stopCapture(activeSession.id).then((res) => {
-          if (activeSession && activeSession.video) {
-            activeSession.video.saved = !!(res && res.success);
-            activeSession.video.endedEarly = true;
-          }
-        });
-      }
+      if (activeSession && !activeSession.endTime) void stopSession().catch(() => {});
       return false;
 
     case "stopSession":
@@ -1275,9 +1324,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case "getConfig":
-      getConfig().then(sendResponse);
+      getConfig().then(c => sendResponse(
+        SortSecurity.page(sender, ["popup.html"]) ? c :
+        SortSecurity.page(sender, ["ticket.html"]) ? {theme: c.theme, downloadFolder: c.downloadFolder,
+          sipgateName: c.sipgateName, upload: c.upload, odoo: c.odoo} : {theme: c.theme})).catch(() => sendResponse({success: false, error: "Settings could not be loaded."}));
       return true;
 
+    case "getUpdateStatus":
+      SortUpdates.status().then(sendResponse); return true;
+    case "checkForUpdate":
+      SortUpdates.check().then(sendResponse); return true;
+    case "restartForUpdate":
+      SortUpdates.restart().then(sendResponse); return true;
+    case "deferUpdate":
+      SortUpdates.defer().then(sendResponse); return true;
+    case "setTheme":
+      getConfig().then(c => saveConfig({...c, theme: message.theme})).then(() => sendResponse({success: true}))
+        .catch(() => sendResponse({success: false, error: "Theme could not be saved."})); return true;
+    case "clearCredentials":
+      getConfig().then(c => saveConfig({...c, odoo: {...c.odoo, apiKey: ""}, callTrigger: {...c.callTrigger, apiKey: ""}}))
+        .then(async () => { await syncCallPoller(); sendResponse({success: true}); })
+        .catch(() => sendResponse({success: false, error: "Could not finish removing tokens. Reopen Settings to verify."})); return true;
     case "saveConfig":
       saveConfig(message.config).then(() => {
         // The "!" badge is a standing complaint about a missing name; retire it
@@ -1286,7 +1353,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // A changed name, URL or key must take effect now, not at next restart.
         syncCallPoller();
         sendResponse({ success: true });
-      });
+      }).catch(() => sendResponse({success: false, error: "Settings could not be saved. Check the endpoint."}));
       return true;
 
     case "exportRecording":
@@ -1340,6 +1407,7 @@ async function ensureOffscreen() {
 }
 
 async function handleExportRecording(recordingId) {
+  SortUpdates.beginJob();
   try {
     await ensureOffscreen();
     const res = await chrome.runtime.sendMessage({
@@ -1370,7 +1438,7 @@ async function handleExportRecording(recordingId) {
     return { success: true, filename: res.filename, size: res.size };
   } catch (e) {
     return { success: false, error: String(e.message || e) };
-  }
+  } finally { SortUpdates.endJob(); }
 }
 
 // ---- Tab lifecycle: inject into new tabs while recording ---------------------
@@ -1497,8 +1565,9 @@ chrome.windows.onRemoved.addListener((winId) => {
   if (winId !== captureWindowId) return;
   captureWindowId = null;
   if (capturePending) capturePending({ success: false, error: "Capture window was closed" });
-  if (activeSession && activeSession.video && activeSession.video.captured) {
+  if (activeSession && !activeSession.endTime) {
     activeSession.video.endedEarly = true;
+    void stopSession().catch(() => {});
   }
 });
 
@@ -1517,4 +1586,12 @@ SortDiagnostics.setHealthReader(async () => {
   } catch (_) {}
   return {recording: !!activeSession, captured: !!(activeSession && activeSession.video && activeSession.video.captured),
     configured: !!(cfg.callTrigger && cfg.callTrigger.url && cfg.sipgateName), polling};
+});
+
+SortUpdates.setBusyReader(() => {
+  if (callActive) return "A call is active.";
+  if (sessionStartPromise || capturePending) return "The recording picker is open.";
+  if (sessionStopPromise || (activeSession && activeSession.endTime)) return "A recording is saving.";
+  if (activeSession) return "A recording is active.";
+  return "";
 });

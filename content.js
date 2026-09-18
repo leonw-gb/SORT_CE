@@ -655,7 +655,7 @@ function installWsBridge(recordingId) {
     }
   });
 
-  // Ask the page-world hook to start relaying (and flush its pre-Start buffer).
+  // Ask the page-world hook to relay new frames only; no pre-start buffer exists.
   try {
     window.postMessage({ __mtrWsControl: "start" }, "*");
   } catch (err) {

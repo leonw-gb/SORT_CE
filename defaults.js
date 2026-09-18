@@ -3,10 +3,11 @@
 // These are properties of our infrastructure, not preferences: every operator
 // points at the same upload server and the same Odoo database. Keeping them
 // here rather than in the settings form removes five ways to typo a hostname
-// and makes a fresh install work with nothing but an API key.
+// and keeps infrastructure addresses consistent across operators.
 //
 // The call-state endpoint (Sipgate -> n8n -> SORT) lives here too. Operators
-// only enter their Sipgate name; the address and key are ours to manage.
+// enter their Sipgate name and their separately provisioned call-state token.
+// This audit package also accepts the endpoint in Settings because it was redacted.
 //
 // Loaded by the popup, the ticket dialog, and the service worker
 // (importScripts), so there is exactly one copy of each value.
@@ -28,16 +29,14 @@ const FIXED = {
   // per operator against the same small endpoint.
   callPollMinMs: 1000,
   callPollDefaultMs: 2000,
-  // Call-state endpoint. Not shown in the settings form.
+  // Non-secret endpoint may be fixed here. The shared token is always entered locally.
   callTrigger: {
     url: "https://j32j4jh324jh4j3j3j24cj34jc23j4cj234cj4hkj121212.replit.app/api/events",   // <-- your n8n call-state address
-    apiKey: "chk_e22cd3ce9641a41621b871511e21a4b931ee2fa9216e05a2",                       // <-- sent as X-API-Key
     intervalMs: 2000
   }
 };
 
-// Merge the stored config with the fixed values. The fixed values always win,
-// so an older stored config cannot resurrect a stale hostname.
+// Fixed infrastructure values win; user-entered call-state credentials persist.
 function withFixedSettings(config) {
   const c = config || {};
   return Object.assign({}, c, {
@@ -45,11 +44,11 @@ function withFixedSettings(config) {
     theme: c.theme === "light" ? "light" : "dark",
     downloadFolder: c.downloadFolder || "Recordings",
     upload: { url: FIXED.upload.url },
-    // Fixed like the upload server and Odoo. Older stored configs that still
-    // carry a url/apiKey from the test phase are overwritten here.
+    // Never distribute the call-state token in this file. Preserve local credentials.
+    // A public endpoint can optionally be fixed above; empty means use local Settings.
     callTrigger: {
-      url: FIXED.callTrigger.url,
-      apiKey: FIXED.callTrigger.apiKey,
+      url: FIXED.callTrigger.url || String(c.callTrigger?.url || "").trim(),
+      apiKey: String(c.callTrigger?.apiKey || "").trim(),
       intervalMs: Math.max(FIXED.callPollMinMs, Number(FIXED.callTrigger.intervalMs) || FIXED.callPollDefaultMs)
     },
     odoo: Object.assign({}, c.odoo, {

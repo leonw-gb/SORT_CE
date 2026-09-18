@@ -84,7 +84,8 @@ async function buildBundle(recordingId) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.target !== "offscreen") return false;
+  if (!message || message.target !== "offscreen") return false;
+  if (!SortSecurity.worker(sender)) return false;
 
   if (message.type === "supportBlob") {
     if (sender.id !== chrome.runtime.id || sender.tab) return false;

@@ -269,6 +269,9 @@
       box-shadow: 0 2px 12px rgba(0,0,0,.2);
       animation: fadeUp .25s ease; white-space: nowrap; z-index: 999;
     }
+    button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .toast { max-width: calc(100% - 28px); white-space: normal; overflow-wrap: anywhere; }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
     @keyframes fadeUp { from { opacity:0; transform: translateX(-50%) translateY(8px); } }
   </style>
 </head>
@@ -290,6 +293,13 @@
     </div>
   </div>
 
+  <section id="updatePanel" hidden style="margin:12px;padding:12px;border:1px solid var(--edge);background:var(--surface);" aria-label="SORT updates">
+    <strong id="updateTitle">Update ready</strong>
+    <p id="updateMessage" role="status" style="font-size:12px;line-height:1.5;margin:8px 0;"></p>
+    <button class="btn" id="restartUpdate">Restart SORT now</button>
+    <button class="btn btn-secondary" id="deferUpdate">Later</button>
+    <p class="help-text">Later prevents SORT from restarting itself now. Chrome may still apply updates automatically when idle or after a browser restart.</p>
+  </section>
   <div class="tab-buttons">
     <button class="tab-button active" data-tab="recordings">Recordings</button>
     <button class="tab-button" data-tab="settings">Settings</button>
@@ -353,8 +363,8 @@
       </div>
       <div class="setting">
         <label for="odooKey">API key</label>
-        <input type="password" id="odooKey" placeholder="">
-        <div class="help-text">Personal key from your Odoo profile. It never leaves this browser.</div>
+        <input type="password" id="odooKey" placeholder="" autocomplete="off" spellcheck="false">
+        <div class="help-text">Personal key from your Odoo profile. Saved in this Chrome profile and sent to Odoo over HTTPS to authenticate requests.</div>
       </div>
       <button class="btn btn-secondary" id="testOdoo">Test the Odoo connection</button>
     </fieldset>
@@ -372,12 +382,25 @@
 
     <fieldset>
       <legend>Record when I am on a call</legend>
+      <div class="setting"><label for="callStateUrl">Call-state endpoint</label>
+        <input type="text" id="callStateUrl" spellcheck="false" autocomplete="off">
+        <div class="help-text">Use the endpoint supplied by Leon. This test package has no endpoint preconfigured.</div></div>
+      <div class="setting"><label for="callStateToken">Shared call-state token</label>
+        <input type="password" id="callStateToken" autocomplete="off" spellcheck="false">
+        <div class="help-text">Leon provides this separately. Enter it once and keep it out of screenshots and support messages.</div></div>
       <div class="help-text">SORT checks the call system every couple of seconds and starts
         recording when a call is answered under the name above.</div>
       <button class="btn btn-secondary" id="testCall">Test the call connection</button>
       <div class="help-text" id="callStatus" role="status"></div>
     </fieldset>
 
+    <fieldset>
+      <legend>Credentials and updates</legend>
+      <div class="help-text">Tokens are saved in this Chrome profile, not Chrome Sync. They are not protected by application-level encryption. Removing them disables authenticated access until you enter them again.</div>
+      <button class="btn btn-secondary" id="clearCredentials">Remove saved tokens</button>
+      <button class="btn btn-secondary" id="checkUpdate">Check for updates</button>
+      <div id="updateCheckStatus" class="help-text" role="status">Chrome also checks automatically. Store-managed installations only.</div>
+    </fieldset>
     <fieldset>
       <legend>Support</legend>
       <div class="help-text">Diagnostic logs stay on this computer: up to 7 days, 5 MiB of log data or 5,000 entries, whichever limit is reached first. They do not include recording contents, typed values or credentials.</div>

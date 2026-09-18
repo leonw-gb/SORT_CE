@@ -28,7 +28,7 @@
         out[key] = Math.min(Math.round(value), Number.MAX_SAFE_INTEGER);
       else if (boolean.has(key) && typeof value === 'boolean') out[key] = value;
       else if (key === 'errorName' && errors.has(value)) out.errorName = value;
-      else if (key === 'file' && /^(?:background|popup|offscreen|capture|ticket|import|continue|player|content|callpoll|callmatch|upload|odoo|sortz|defaults|theme|diagnostics|diagnostics-core|build-info|ws-hook)\.js$/.test(value)) out.file = value;
+      else if (key === 'file' && /^(?:background|popup|offscreen|capture|ticket|import|continue|player|content|callpoll|callmatch|upload|odoo|sortz|defaults|theme|diagnostics|diagnostics-core|build-info|ws-hook|updates|security)\.js$/.test(value)) out.file = value;
     }
     return out;
   }

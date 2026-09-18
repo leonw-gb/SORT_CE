@@ -11,9 +11,8 @@
 //      1. Constructor wrap -> catches every socket created after we load.
 //      2. Prototype-level send/addEventListener wrap -> also catches a socket
 //         that some bundler cached a reference to before our constructor swap.
-//  * Frames are BUFFERED from page load. The content script sends a
-//    "__mtrWsStart" message when the expert presses Start; we then flush the
-//    buffer and stream live. On "__mtrWsStop" we go back to buffering-only.
+//  * Hooks install early, but frames are discarded until a recording starts.
+//    Stopping immediately resumes discarding; no pre-start payloads are retained.
 (function () {
   if (window.__mtrWsHookInstalled) return;
   window.__mtrWsHookInstalled = true;
@@ -37,9 +36,7 @@
   } catch (e) { /* ignore */ }
 
   var MAX = 8000;          // max chars of a single frame to relay
-  var BUFFER_CAP = 2000;   // max frames to hold before Start is pressed
   var recording = false;
-  var buffer = [];
 
   function serialize(data) {
     try {
@@ -56,6 +53,7 @@
   }
 
   function relay(direction, url, payload) {
+    if (!recording) return; // Do not serialize or retain data before consent/start.
     var frame = {
       __mtrWs: true,
       direction: direction,
@@ -65,17 +63,6 @@
     };
     if (recording) {
       try { window.postMessage(frame, "*"); } catch (e) {}
-    } else {
-      buffer.push(frame);
-      if (buffer.length > BUFFER_CAP) buffer.shift();
-    }
-  }
-
-  function flushBuffer() {
-    var pending = buffer.splice(0, buffer.length);
-    for (var i = 0; i < pending.length; i++) {
-      pending[i].buffered = true;
-      try { window.postMessage(pending[i], "*"); } catch (e) {}
     }
   }
 
@@ -84,7 +71,6 @@
     if (!e.data || e.source !== window) return;
     if (e.data.__mtrWsControl === "start") {
       recording = true;
-      flushBuffer();
       // Confirm the hook is alive so the recorder can log wsBridgeStatus.
       try { window.postMessage({ __mtrWsStatus: true, installed: true }, "*"); } catch (err) {}
     } else if (e.data.__mtrWsControl === "stop") {

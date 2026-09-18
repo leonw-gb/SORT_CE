@@ -297,7 +297,10 @@
       return true;
     }
     if (message.type === 'export' && sender.url === chrome.runtime.getURL('popup.html')) {
-      if (!exportJob) exportJob = doExport().finally(() => { exportJob = null; });
+      if (!exportJob) {
+        globalThis.SortUpdates?.beginJob();
+        exportJob = doExport().finally(() => { exportJob = null; globalThis.SortUpdates?.endJob(); });
+      }
       exportJob.then(sendResponse);
       return true;
     }
