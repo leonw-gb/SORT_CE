@@ -753,17 +753,22 @@ const ICON_IDLE = {
   16: "icons/idle16.png", 32: "icons/idle32.png",
   48: "icons/idle48.png", 128: "icons/idle128.png"
 };
+const ICON_INACTIVE = {
+  16: "icons/inactive16.png", 32: "icons/inactive32.png",
+  48: "icons/inactive48.png", 128: "icons/inactive128.png"
+};
 const ICON_RECORDING = {
   16: "icons/recording16.png", 32: "icons/recording32.png",
   48: "icons/recording48.png", 128: "icons/recording128.png"
 };
 
 function updateBadge(recording) {
-  chrome.action.setIcon({ path: recording ? ICON_RECORDING : ICON_IDLE }).catch(() => {});
+  const icon = !toolEnabled ? ICON_INACTIVE : (recording ? ICON_RECORDING : ICON_IDLE);
+  chrome.action.setIcon({ path: icon }).catch(() => {});
   chrome.action.setTitle({
     title: recording ? "SORT - recording" : (toolEnabled ? "SORT - ready" : "SORT - off")
   }).catch(() => {});
-  // Keep the original icons. An OFF badge distinguishes disabled from ready.
+  // Use the inactive icon while off; retain the existing OFF badge behavior.
   chrome.action.setBadgeText({ text: !toolEnabled && !recording ? "OFF" : "" });
   if (!toolEnabled) chrome.action.setBadgeBackgroundColor({color: "#596273"}).catch(() => {});
 }
