@@ -18,6 +18,87 @@ const CONFIG_STORE = "config";
 // pulling the video into memory.
 const VIDEOS_STORE = "videos";
 
+// Persistent recording enablement. Separate from credentials/settings so a
+// Settings save cannot accidentally reactivate SORT. Fail closed until loaded.
+let toolEnabled = false;
+let toolEnabledSince = 0;
+let toolStateError = null;
+let toolTransition = false;
+let toolStateQueue = Promise.resolve();
+const toolReady = chrome.storage.local.get("sortToolState").then(({sortToolState}) => {
+  toolEnabled = sortToolState?.enabled !== false;
+  toolEnabledSince = Number(sortToolState?.since) || 0;
+}).catch(() => {
+  toolStateError = "Could not read SORT's saved on/off state. Try switching it on again.";
+}).then(() => updateBadge(false));
+
+function toolUnavailable() {
+  return {success: false, disabled: true, error: "SORT is off. Switch it on in the popup to record."};
+}
+function publishToolState() {
+  updateBadge(!!activeSession);
+  chrome.runtime.sendMessage({type: "toolStateChanged"}).catch(() => {});
+}
+function setToolEnabled(enabled) {
+  if (typeof enabled !== "boolean") return Promise.resolve({success: false, error: "Invalid on/off state."});
+  const operation = toolStateQueue.then(() => applyToolEnabled(enabled));
+  toolStateQueue = operation.catch(() => {});
+  return operation;
+}
+async function applyToolEnabled(enabled) {
+  await toolReady;
+  if (enabled === toolEnabled && !toolStateError && !(activeSession && !enabled))
+    return {success: true, enabled: toolEnabled};
+  toolTransition = true;
+  SortUpdates.beginJob();
+  let stopped = null;
+  try {
+    // Block every new start immediately, even during the storage write.
+    if (!enabled) toolEnabled = false;
+    publishToolState();
+    const since = Date.now();
+    let persistenceError = null;
+    try {
+      await chrome.storage.local.set({sortToolState: {enabled, since}});
+      toolEnabled = enabled;
+      toolEnabledSince = since;
+      toolStateError = null;
+    } catch (_) {
+      toolEnabled = false;
+      persistenceError = new Error("SORT is off for now, but its state could not be saved. Retry before restarting Chrome.");
+      toolStateError = persistenceError.message;
+    }
+    if (!toolEnabled) {
+      // Poll shutdown must not delay stopping a recording or share picker.
+      const pollStop = syncCallPoller();
+      clearContinueAlarm();
+      void closeContinueWindow();
+      pendingCallEndPrompt = false;
+      callActive = false;
+      followedCallId = null;
+      if (capturePending) {
+        capturePending({success: false, cancelled: true, error: "SORT was switched off."});
+        await closeCaptureWindow();
+      }
+      // A picker/initialization already in flight must settle before the
+      // normal stop/save flow. A late encoder start is saved, not discarded.
+      if (sessionStartPromise) await sessionStartPromise.catch(() => {});
+      if (activeSession || sessionStopPromise) stopped = await stopSession();
+      await pollStop;
+    } else {
+      await syncCallPoller();
+    }
+    if (persistenceError) throw persistenceError;
+    return {success: true, enabled: toolEnabled, stopped: !!stopped?.success, ticketDialog: !!stopped?.ticketDialog};
+  } catch (e) {
+    return {success: false, enabled: toolEnabled, error: String(e.message || e)};
+  } finally {
+    toolTransition = false;
+    SortUpdates.endJob();
+    publishToolState();
+  }
+}
+
 // ---- IndexedDB ---------------------------------------------------------------
 async function initDB() {
   return new Promise((resolve, reject) => {
@@ -81,10 +162,15 @@ async function openCaptureWindow(recordingId) {
     top = Math.max(0, Math.round(cur.top + (cur.height - H) / 2));
   } catch (e) { /* let Chrome place it */ }
 
+  if (!toolEnabled) throw new Error("SORT was switched off.");
   const win = await chrome.windows.create({
     url, type: "popup", width: W, height: H, left, top, focused: true
   });
   captureWindowId = win.id;
+  if (!toolEnabled) {
+    await closeCaptureWindow();
+    throw new Error("SORT was switched off.");
+  }
   return win;
 }
 
@@ -235,6 +321,8 @@ function makeSessionId() {
 let sessionStartPromise = null;
 let pendingCallEndPrompt = false;
 async function startSession(options) {
+  await toolReady;
+  if (!toolEnabled) return toolUnavailable();
   if (SortUpdates.locked && options?.trigger === "call") SortUpdates.cancelRestart();
   if (SortUpdates.locked) return {success: false, error: "SORT is restarting for an update."};
   if (sessionStopPromise) return {success: false, error: "The previous recording is still saving."};
@@ -269,6 +357,7 @@ async function startSessionImpl(options) {
   }
 
   const config = await getConfig();
+  if (!toolEnabled) return toolUnavailable();
 
   // A recording with no name on it cannot be shared usefully: the moment it
   // leaves this machine as a bundle, "who recorded this" has no answer. The
@@ -337,9 +426,13 @@ async function startSessionImpl(options) {
     activeSession.video.startOffset = capture.startedAt - activeSession.startTime;
   }
 
+  // If switched off just as the encoder started, let shutdown save it.
+  if (!toolEnabled) return {success: true, recordingId: activeSession.id};
+
   // Inject the recorder into every currently open tab
   injectedTabs.clear();
   const tabs = await chrome.tabs.query({});
+  if (!toolEnabled || !activeSession || activeSession.endTime) return {success: false, cancelled: true};
   for (const tab of tabs) {
     if (!tab.url || tab.url.startsWith("chrome://") || tab.url.startsWith("chrome-extension://")) continue;
     activeSession.tabs[tab.id] = { url: tab.url, title: tab.title };
@@ -363,6 +456,7 @@ async function startSessionImpl(options) {
     if (cur) lastActiveTabId = cur.id;
   } catch (e) { /* no focused window */ }
 
+  if (!toolEnabled || !activeSession || activeSession.endTime) return {success: false, cancelled: true};
   updateBadge(true);
 
   // Only remind while off-call. A hangup during the share picker still gets
@@ -381,7 +475,7 @@ async function startSessionImpl(options) {
 // Record a call against the running session, wherever the session came from.
 // Also visible on the timeline, so the replay shows when the phone rang.
 function attachCallToSession(call) {
-  if (!activeSession) return;
+  if (!toolEnabled || !activeSession || activeSession.endTime) return;
   const entry = {
     id: call.id || null,
     direction: call.direction || "in",
@@ -411,7 +505,7 @@ function attachCallToSession(call) {
 // NOTHING until it is manually refreshed.
 async function initializeTab(tabId) {
   const session = activeSession;
-  const isCurrent = () => !!session && activeSession === session && !session.endTime;
+  const isCurrent = () => toolEnabled && !!session && activeSession === session && !session.endTime;
   if (!isCurrent()) return;
   const msg = {type: "initializeRecorder", recordingId: session.id};
   const cancelStale = async () => {
@@ -559,7 +653,7 @@ let reminderDueAt = 0;
 let reminderAlarmQueue = Promise.resolve();
 
 function canRemind(session = activeSession) {
-  return !!session && activeSession === session && !session.endTime && !callActive;
+  return toolEnabled && !!session && activeSession === session && !session.endTime && !callActive;
 }
 
 function queueReminderAlarm(work) {
@@ -667,11 +761,11 @@ const ICON_RECORDING = {
 function updateBadge(recording) {
   chrome.action.setIcon({ path: recording ? ICON_RECORDING : ICON_IDLE }).catch(() => {});
   chrome.action.setTitle({
-    title: recording ? "SORT - recording" : "SORT - ready"
+    title: recording ? "SORT - recording" : (toolEnabled ? "SORT - ready" : "SORT - off")
   }).catch(() => {});
-  // No badge text. The red dot on the icon already says "recording", and "REC"
-  // stacked on top of it was the same fact twice.
-  chrome.action.setBadgeText({ text: "" });
+  // Keep the original icons. An OFF badge distinguishes disabled from ready.
+  chrome.action.setBadgeText({ text: !toolEnabled && !recording ? "OFF" : "" });
+  if (!toolEnabled) chrome.action.setBadgeBackgroundColor({color: "#596273"}).catch(() => {});
 }
 
 // A service worker restart loses the icon, so restore it whenever the worker
@@ -898,6 +992,8 @@ async function trail(what, extra) {
 }
 
 async function handleCallStarted(call) {
+  await toolReady;
+  if (!toolEnabled) return toolUnavailable();
   markCallActive(call);
   void trail("worker received callStarted", { callId: call.callId, event: call.event });
   const res = await startSession({
@@ -935,6 +1031,10 @@ const recentTriggerIds = new Set();
 let lastTriggerTimestamp = 0;
 
 async function consumeTrigger(t) {
+  await toolReady;
+  if (!toolEnabled) return;
+  const issued = Number(String(t?.id || "").split("_")[0]);
+  if (toolEnabledSince && (!Number.isFinite(issued) || issued <= toolEnabledSince)) return;
   if (!t || !t.id || t.id === lastTriggerId || recentTriggerIds.has(t.id)) return;
   const timestamp = Number(String(t.id).split("_")[0]);
   if (Number.isFinite(timestamp) && timestamp > 0) {
@@ -993,7 +1093,18 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 // Push the current settings at the poller. Called on install, on startup, and
 // whenever settings are saved, so a changed name or URL takes effect at once.
-async function syncCallPoller() {
+let pollSyncQueue = Promise.resolve();
+function syncCallPoller() {
+  const work = pollSyncQueue.then(syncCallPollerImpl);
+  pollSyncQueue = work.catch(() => {});
+  return work;
+}
+async function syncCallPollerImpl() {
+  await toolReady;
+  if (!toolEnabled) {
+    await chrome.runtime.sendMessage({target: "callpoll", type: "stop"}).catch(() => {});
+    return {polling: false, disabled: true};
+  }
   const config = await getConfig();
   const enabled = !!(config.callTrigger && /^https?:\/\//.test(config.callTrigger.url || "") && config.callTrigger.apiKey && (config.sipgateName || "").trim());
   try {
@@ -1001,17 +1112,18 @@ async function syncCallPoller() {
   } catch (e) {
     return { polling: false, error: "The background worker could not be started." };
   }
-  if (!enabled) {
+  if (!enabled || !toolEnabled) {
     chrome.runtime.sendMessage({ target: "callpoll", type: "stop" }).catch(() => {});
     return { polling: false };
   }
-  chrome.runtime.sendMessage({
+  await chrome.runtime.sendMessage({
     target: "callpoll",
     type: "configure",
     config: {
       url: config.callTrigger.url,
       apiKey: config.callTrigger.apiKey || "",
       name: (config.sipgateName || "").trim(),
+      resumeAfter: toolEnabledSince,
       intervalMs: Math.max(1000, Number(config.callTrigger.intervalMs) || 2000)
     }
   }).catch(() => {});
@@ -1027,6 +1139,8 @@ async function syncCallPoller() {
 const POLL_KEEPALIVE_ALARM = "callPollKeepalive";
 
 async function ensureCallPollerAlive() {
+  await toolReady;
+  if (!toolEnabled) return;
   const config = await getConfig();
   if (!(config.callTrigger && /^https?:\/\//.test(config.callTrigger.url || "") && config.callTrigger.apiKey && (config.sipgateName || "").trim())) return;
   let alive = false;
@@ -1074,7 +1188,7 @@ chrome.alarms.create(POLL_KEEPALIVE_ALARM, { periodInMinutes: 1 });
 syncCallPoller();
 
 const WORKER_MESSAGE_PAGES = {
-  startSession: ["popup.html"], stopSession: ["popup.html"],
+  startSession: ["popup.html"], stopSession: ["popup.html"], setToolEnabled: ["popup.html"],
   callStarted: ["offscreen.html"], callStateStarted: ["offscreen.html"],
   callStateEnded: ["offscreen.html"], callStateAdopted: ["offscreen.html"], callPollError: ["offscreen.html"],
   syncCallPoller: ["popup.html"], callPollerStatus: ["popup.html"], probeCallEndpoint: ["popup.html"],
@@ -1110,6 +1224,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
   switch (message.type) {
+
+    case "setToolEnabled":
+      setToolEnabled(message.enabled).then(sendResponse);
+      return true;
 
     case "startSession":
       startSession(message.options).then(sendResponse);
@@ -1279,21 +1397,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case "isRecordingSession":
-      sendResponse({active: !!activeSession && !activeSession.endTime &&
+      sendResponse({active: toolEnabled && !!activeSession && !activeSession.endTime &&
         message.recordingId === activeSession.id});
       return false;
 
     case "getSessionStatus":
-      sendResponse({
+      toolReady.then(() => sendResponse({
+        enabled: toolEnabled, transitioning: toolTransition, stateError: toolStateError,
         active: !!activeSession,
         tabCount: activeSession ? Object.keys(activeSession.tabs).length : 0,
         eventCount: activeSession ? activeSession.events.length : 0,
         startTime: activeSession ? activeSession.startTime : null
-      });
-      return false;
+      }));
+      return true;
 
     case "recordEvent":
-      if (!activeSession || activeSession.endTime || message.recordingId !== activeSession.id) {
+      if (!toolEnabled || !activeSession || activeSession.endTime || message.recordingId !== activeSession.id) {
         sendResponse({ ok: false });
         return false;
       }
@@ -1443,7 +1562,7 @@ async function handleExportRecording(recordingId) {
 
 // ---- Tab lifecycle: inject into new tabs while recording ---------------------
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (!activeSession) return;
+  if (!toolEnabled || !activeSession || activeSession.endTime) return;
   if (!tab.url || tab.url.startsWith("chrome://") || tab.url.startsWith("chrome-extension://")) return;
 
   // A real document load starts in the "loading" state -> the content script
@@ -1500,13 +1619,13 @@ let switchSettleTimer = null;
 const SWITCH_SETTLE_MS = 250;
 
 function noteFocusChange(reason) {
-  if (!activeSession) return;
+  if (!toolEnabled || !activeSession || activeSession.endTime) return;
   clearTimeout(switchSettleTimer);
   switchSettleTimer = setTimeout(() => settleTabSwitch(reason), SWITCH_SETTLE_MS);
 }
 
 async function settleTabSwitch(reason) {
-  if (!activeSession) return;
+  if (!toolEnabled || !activeSession || activeSession.endTime) return;
   let tab = null;
   try {
     // The focused window is the authority. If Chrome itself lost focus (the
@@ -1515,7 +1634,7 @@ async function settleTabSwitch(reason) {
     const [focused] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     tab = focused || null;
   } catch (e) { /* no window to query */ }
-  if (!tab || tab.id == null || tab.id === lastActiveTabId) return;
+  if (!toolEnabled || !activeSession || activeSession.endTime || !tab || tab.id == null || tab.id === lastActiveTabId) return;
 
   lastActiveTabId = tab.id;
   activeSession.events.push({
@@ -1550,7 +1669,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     // Whatever gains focus next is a real switch, so let it settle.
     noteFocusChange("tab-closed");
   }
-  if (!activeSession) return;
+  if (!toolEnabled || !activeSession || activeSession.endTime) return;
   activeSession.events.push({
     type: "tabClosed",
     tabId,

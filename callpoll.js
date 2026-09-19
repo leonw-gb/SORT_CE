@@ -28,6 +28,8 @@ let lastError = null;
 let lastOkAt = null;
 let inFlight = false;
 let lastPollAt = null;
+let pollEpoch = 0;
+let pollController = null;
 
 // ---- flight recorder ----------------------------------------------------------
 // Every decision the watcher makes, kept in a small ring buffer the popup can
@@ -43,6 +45,7 @@ function note(what, extra) {
 
 function schedule(ms) {
   clearTimeout(timer);
+  if (!cfg) { timer = null; return; }
   timer = setTimeout(tick, ms);
 }
 
@@ -158,6 +161,11 @@ let tick = async function tick() {
   if (!cfg || !cfg.url) return;
   if (inFlight) { schedule(currentDelay); return; }
   inFlight = true;
+  const epoch = pollEpoch;
+  const config = cfg;
+  const ctl = new AbortController();
+  pollController = ctl;
+  let killer = null;
   lastPollAt = Date.now();
 
   let payload = null;
@@ -167,13 +175,13 @@ let tick = async function tick() {
     if (cfg.apiKey) headers["X-API-Key"] = cfg.apiKey;
 
     // A poll that outlives its own interval is worse than a skipped poll.
-    const ctl = new AbortController();
-    const killer = setTimeout(() => ctl.abort(), Math.max(4000, currentDelay * 2));
+    killer = setTimeout(() => ctl.abort(), Math.max(4000, currentDelay * 2));
     const res = await fetch(cfg.url, { method: "GET", headers, signal: ctl.signal, cache: "no-store" });
     clearTimeout(killer);
 
     if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), {status: res.status});
     payload = await res.json();
+    if (epoch !== pollEpoch || cfg !== config) return;
 
     if (fails) void SortDiagnostics.emit("poll.connection", "recovered", {failures: fails});
     fails = 0;
@@ -181,6 +189,7 @@ let tick = async function tick() {
     lastOkAt = Date.now();
     currentDelay = cfg.intervalMs || DEFAULT_INTERVAL_MS;
   } catch (e) {
+    if (epoch !== pollEpoch || cfg !== config) return;
     inFlight = false;
     fails += 1;
     if (fails === 1) void SortDiagnostics.error("poll.connection", e);
@@ -192,7 +201,11 @@ let tick = async function tick() {
     }
     schedule(currentDelay);
     return;
+  } finally {
+    clearTimeout(killer);
+    if (epoch === pollEpoch) { inFlight = false; pollController = null; }
   }
+  if (epoch !== pollEpoch || cfg !== config) return;
   inFlight = false;
 
   // The whole decision, in one call.
@@ -218,7 +231,7 @@ let tick = async function tick() {
     // treated as fresh, not adopted.
     if (prev === null) {
       const age = mine && mine.at ? Date.now() - mine.at : Infinity;
-      if (mine && age < FRESH_CALL_MS) {
+      if (mine && age < FRESH_CALL_MS && (!cfg.resumeAfter || mine.at > cfg.resumeAfter)) {
         note("first poll, call is fresh -> start", { callId: mine.callId, ageMs: age });
         reportCallState({ type: "callStateStarted", call: mine });
       } else {
@@ -259,6 +272,7 @@ tick = function safeTick() {
 };
 
 function start(next) {
+  stop();
   connectPort();
   note("watcher configured", { url: next && next.url, name: next && next.name });
   cfg = next;
@@ -271,7 +285,12 @@ function start(next) {
 }
 
 function stop() {
+  pollEpoch++;
+  if (pollController) pollController.abort();
+  pollController = null;
+  inFlight = false;
   if (cfg) void SortDiagnostics.emit("poll.stop", "ok");
+  cfg = null;
   disconnectPort();
   clearTimeout(timer);
   timer = null;

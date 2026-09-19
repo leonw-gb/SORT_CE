@@ -3,6 +3,52 @@
 let sessionActive = false;
 let sessionStartTime = null;
 let pollTimer = null;
+let toolEnabled = null;
+let toolToggleBusy = false;
+let toolWorkerBusy = false;
+let toolError = "";
+
+function renderToolState() {
+  const toggle = document.getElementById("toolToggle");
+  const known = typeof toolEnabled === "boolean";
+  const busy = toolToggleBusy || toolWorkerBusy;
+  toggle.disabled = !known || busy;
+  toggle.setAttribute("aria-checked", String(toolEnabled === true));
+  toggle.setAttribute("aria-busy", String(busy));
+  toggle.title = toolEnabled ? "Switch SORT off and save any active recording" : "Switch SORT on";
+  document.getElementById("toolToggleLabel").textContent = busy || !known ? "..." : (toolEnabled ? "On" : "Off");
+  const note = document.getElementById("toolStateNote");
+  note.hidden = known && toolEnabled && !busy && !toolError;
+  note.textContent = toolError || (busy ? "Applying SORT state. Any active recording is stopped and saved when switching off."
+    : !known ? "Loading SORT status..."
+    : "SORT is off. Manual and automatic recording are disabled. Recordings and Settings remain available.");
+  const record = document.getElementById("btnRecord");
+  record.disabled = busy || (!sessionActive && toolEnabled !== true);
+  if (!sessionActive) record.textContent = toolEnabled === false ? "SORT is off" : "\u25b6 Start Recording";
+}
+
+document.getElementById("toolToggle").addEventListener("click", async () => {
+  if (toolToggleBusy || toolWorkerBusy || typeof toolEnabled !== "boolean") return;
+  toolToggleBusy = true;
+  toolError = "";
+  renderToolState();
+  try {
+    const res = await chrome.runtime.sendMessage({type: "setToolEnabled", enabled: !toolEnabled});
+    if (typeof res?.enabled === "boolean") toolEnabled = res.enabled;
+    if (!res?.success) throw new Error(res?.error || "Could not change SORT state.");
+    showToast(res.enabled ? "SORT is on" : res.stopped ? "SORT is off. Recording saved." : "SORT is off");
+    loadRecordings();
+  } catch (e) {
+    toolError = String(e.message || e);
+  } finally {
+    toolToggleBusy = false;
+    renderToolState();
+    refreshStatus();
+  }
+});
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === "toolStateChanged") refreshStatus();
+});
 
 // ---- Tab switching -----------------------------------------------------------
 document.querySelectorAll(".tab-button").forEach(btn => {
@@ -17,6 +63,7 @@ document.querySelectorAll(".tab-button").forEach(btn => {
 
 // ---- Record button -----------------------------------------------------------
 document.getElementById("btnRecord").addEventListener("click", () => {
+  if (toolToggleBusy || toolWorkerBusy || (!sessionActive && toolEnabled !== true)) return;
   if (!sessionActive) {
     // Video is not optional: a timeline without the screen it happened on is
     // half a recording, and the operator should not be able to ship one.
@@ -70,12 +117,22 @@ function setSessionUI(active) {
     sessionStartTime = null;
     stopElapsedTimer();
   }
+  renderToolState();
 }
 
 function refreshStatus() {
   chrome.runtime.sendMessage({ type: "getSessionStatus" }, (s) => {
-    if (!s) return;
+    const err = chrome.runtime.lastError;
+    if (err || !s || typeof s.enabled !== "boolean") {
+      toolError = "Could not read SORT status. Reopen the popup to retry.";
+      renderToolState();
+      return;
+    }
+    toolEnabled = s.enabled;
+    toolWorkerBusy = !!s.transitioning;
+    if (s.stateError) toolError = s.stateError;
     if (s.active !== sessionActive) setSessionUI(s.active);
+    renderToolState();
     if (s.active) {
       if (!sessionStartTime && s.startTime) sessionStartTime = s.startTime;
       document.getElementById("statTabs").textContent = s.tabCount;
@@ -628,7 +685,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 // the worker was asleep. Re-read whenever the window regains focus, and poll
 // gently while a ticket window is plausibly open.
 window.addEventListener("focus", () => { loadRecordings(); refreshStatus(); });
-setInterval(() => { if (!document.hidden) loadRecordings(); }, 3000);
+setInterval(() => { if (!document.hidden) { loadRecordings(); refreshStatus(); } }, 3000);
 
 // ---- Init -------------------------------------------------------------------
 loadTheme();

@@ -74,6 +74,22 @@
     /* The expansion sits next to the acronym once, small, so nobody has to be
        told twice what SORT stands for. */
     .wordmark { font-size: 10px; color: var(--ink-faint); letter-spacing: .2px; }
+    .header-brand { flex: 1; min-width: 0; }
+    .header-brand .wordmark { display: block; margin-top: 3px; line-height: 1.35; }
+    .tool-toggle {
+      display: inline-flex; align-items: center; gap: 6px; flex: none;
+      padding: 7px 8px; border: 1px solid var(--edge2); border-radius: 6px;
+      background: var(--surface2); color: var(--ink); cursor: pointer;
+      font-family: inherit; font-size: 11px; font-weight: 600; line-height: 1.4;
+    }
+    .tool-toggle:hover:not(:disabled) { border-color: var(--link); }
+    .tool-toggle:disabled { cursor: wait; opacity: .65; }
+    .toggle-track { width: 28px; height: 16px; padding: 2px; border-radius: 9px; background: var(--edge2); }
+    .toggle-thumb { display: block; width: 12px; height: 12px; border-radius: 50%; background: var(--ink); }
+    .tool-toggle[aria-checked="true"] .toggle-track { background: var(--accent); }
+    .tool-toggle[aria-checked="true"] .toggle-thumb { transform: translateX(12px); background: #fff; }
+    .tool-state-note { padding: 9px 16px; font-size: 11px; line-height: 1.5; color: var(--ink); background: var(--surface2); border-bottom: 1px solid var(--edge); }
+    .btn-record:disabled { cursor: not-allowed; background: var(--surface2); color: var(--ink-soft); border: 1px solid var(--edge2); }
 
     .status-dot {
       width: 10px; height: 10px;
@@ -141,6 +157,21 @@
     .tab-content.active { display: block; }
 
     /* ---- Settings ---- */
+    .privacy-link {
+      display: inline-block; max-width: 100%; padding: 5px 0;
+      color: var(--link); font-size: 12px; font-weight: 600;
+      line-height: 1.5; text-decoration: underline;
+      text-underline-offset: 3px; overflow-wrap: anywhere;
+    }
+    .privacy-link:hover { text-decoration-thickness: 2px; }
+    .privacy-link:focus-visible {
+      outline: 2px solid var(--link); outline-offset: 3px;
+      border-radius: 2px;
+    }
+    .privacy-note {
+      margin-top: 5px; font-size: 11px;
+      color: var(--ink-soft); line-height: 1.4;
+    }
     .setting { margin-bottom: 16px; }
     .setting label {
       display: block; font-size: 11px; font-weight: 700;
@@ -279,12 +310,20 @@
 
   <div class="header">
     <span class="status-dot" id="statusDot"></span>
-    <h1>SORT</h1>
-    <span class="wordmark">Session Observer Recorder Tracker</span>
+    <div class="header-brand">
+      <h1>SORT</h1>
+      <span class="wordmark">Session Observer Recorder Tracker</span>
+    </div>
+    <button id="toolToggle" class="tool-toggle" type="button" role="switch"
+            aria-checked="false" aria-label="Enable SORT recording" aria-describedby="toolStateNote" disabled>
+      <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+      <span id="toolToggleLabel">…</span>
+    </button>
   </div>
+  <div id="toolStateNote" class="tool-state-note" role="status" aria-live="polite">Loading SORT status…</div>
 
   <div class="session-panel">
-    <button class="btn-record" id="btnRecord">▶ Start Recording</button>
+    <button class="btn-record" id="btnRecord" disabled>▶ Start Recording</button>
     <div class="record-note">Records your screen and every tab action. No audio.</div>
     <div class="session-stats" id="sessionStats">
       <div class="stat"><span class="stat-value" id="statTabs">0</span><span class="stat-label">tabs</span></div>
@@ -408,6 +447,15 @@
       <div class="help-text" id="supportBuild"></div>
       <div class="help-text" id="supportStatus" role="status" aria-live="polite"></div>
       <div class="help-text">Creates a local JSON file with release/build fingerprints and diagnostic events. Nothing is uploaded automatically.</div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Privacy</legend>
+      <a id="privacyNoticeLink" class="privacy-link"
+         href="https://leonw-gb.github.io/" target="_blank"
+         rel="noopener noreferrer" referrerpolicy="no-referrer"
+         aria-describedby="privacyNoticeHelp">Privacy &amp; data use</a>
+      <p id="privacyNoticeHelp" class="privacy-note">Read the SORT privacy notice. Opens in a new tab.</p>
     </fieldset>
 
     <button class="btn btn-primary" id="saveConfig">Save settings</button>
