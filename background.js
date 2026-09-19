@@ -768,9 +768,8 @@ function updateBadge(recording) {
   chrome.action.setTitle({
     title: recording ? "SORT - recording" : (toolEnabled ? "SORT - ready" : "SORT - off")
   }).catch(() => {});
-  // Use the inactive icon while off; retain the existing OFF badge behavior.
-  chrome.action.setBadgeText({ text: !toolEnabled && !recording ? "OFF" : "" });
-  if (!toolEnabled) chrome.action.setBadgeBackgroundColor({color: "#596273"}).catch(() => {});
+  // The icon alone indicates state; also clear any badge left by older builds.
+  chrome.action.setBadgeText({ text: "" }).catch(() => {});
 }
 
 // A service worker restart loses the icon, so restore it whenever the worker
