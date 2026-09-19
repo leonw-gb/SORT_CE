@@ -122,6 +122,8 @@
     }
   }
   function receive(input) {
+    if (typeof globalThis.SortDisclosureAllowsDiagnostics === 'function' &&
+        !globalThis.SortDisclosureAllowsDiagnostics()) return Promise.resolve(false);
     const clean = P.clean(input);
     if (!clean) return Promise.resolve(false);
     const now = Date.now();
@@ -131,8 +133,12 @@
     if (++rateCount > 180) { dropped++; return Promise.resolve(false); }
     recent.set(key, now);
     return enqueue(async () => {
+      if (typeof globalThis.SortDisclosureAllowsDiagnostics === 'function' &&
+          !globalThis.SortDisclosureAllowsDiagnostics()) return false;
       const build = await getBuild();
       const state = await loadState();
+      if (typeof globalThis.SortDisclosureAllowsDiagnostics === 'function' &&
+          !globalThis.SortDisclosureAllowsDiagnostics()) return false;
       state.events.push({...clean, timestamp: now, workerFingerprint: build.installedFingerprint});
       await saveState(state);
       return true;

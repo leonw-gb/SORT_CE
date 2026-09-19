@@ -7,6 +7,57 @@ let toolEnabled = null;
 let toolToggleBusy = false;
 let toolWorkerBusy = false;
 let toolError = "";
+let needsDisclosure = true;
+let disclosureBusy = false;
+const disclosureDialog = document.getElementById("recordingDisclosure");
+
+function showDisclosure() {
+  document.getElementById("disclosureError").hidden = true;
+  if (!disclosureDialog.open) disclosureDialog.showModal();
+  const body = disclosureDialog.querySelector(".disclosure-body");
+  body.scrollTop = 0;
+  body.focus();
+}
+function closeDisclosure() {
+  if (disclosureBusy) return;
+  disclosureDialog.close();
+  document.getElementById("toolToggle").focus();
+}
+document.getElementById("deferDisclosure").addEventListener("click", closeDisclosure);
+disclosureDialog.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeDisclosure();
+});
+document.getElementById("agreeDisclosure").addEventListener("click", async () => {
+  if (disclosureBusy) return;
+  disclosureBusy = true;
+  const agree = document.getElementById("agreeDisclosure");
+  const defer = document.getElementById("deferDisclosure");
+  const error = document.getElementById("disclosureError");
+  agree.disabled = defer.disabled = true;
+  agree.textContent = "Saving agreement...";
+  error.hidden = true;
+  try {
+    const res = await chrome.runtime.sendMessage({type: "acceptDisclosureAndEnable",
+      version: disclosureDialog.dataset.version, affirmative: true});
+    if (!res?.success || res.enabled !== true) throw new Error(res?.error || "Could not save agreement. SORT remains off; please retry.");
+    needsDisclosure = false;
+    toolEnabled = true;
+    toolError = "";
+    disclosureDialog.close();
+    document.getElementById("toolToggle").focus();
+    showToast("Agreement saved. SORT is on.");
+  } catch (e) {
+    error.textContent = String(e.message || e);
+    error.hidden = false;
+  } finally {
+    disclosureBusy = false;
+    agree.disabled = defer.disabled = false;
+    agree.textContent = "Agree and enable SORT";
+    renderToolState();
+    refreshStatus();
+  }
+});
 
 function renderToolState() {
   const toggle = document.getElementById("toolToggle");
@@ -21,6 +72,7 @@ function renderToolState() {
   note.hidden = known && toolEnabled && !busy && !toolError;
   note.textContent = toolError || (busy ? "Applying SORT state. Any active recording is stopped and saved when switching off."
     : !known ? "Loading SORT status..."
+    : needsDisclosure ? "SORT is off. Switch it on to review the one-time recording disclosure. No recording or automatic call polling starts before agreement."
     : "SORT is off. Manual and automatic recording are disabled. Recordings and Settings remain available.");
   const record = document.getElementById("btnRecord");
   record.disabled = busy || (!sessionActive && toolEnabled !== true);
@@ -29,12 +81,14 @@ function renderToolState() {
 
 document.getElementById("toolToggle").addEventListener("click", async () => {
   if (toolToggleBusy || toolWorkerBusy || typeof toolEnabled !== "boolean") return;
+  if (!toolEnabled && needsDisclosure) { showDisclosure(); return; }
   toolToggleBusy = true;
   toolError = "";
   renderToolState();
   try {
     const res = await chrome.runtime.sendMessage({type: "setToolEnabled", enabled: !toolEnabled});
     if (typeof res?.enabled === "boolean") toolEnabled = res.enabled;
+    if (res?.needsDisclosure) { needsDisclosure = true; showDisclosure(); return; }
     if (!res?.success) throw new Error(res?.error || "Could not change SORT state.");
     showToast(res.enabled ? "SORT is on" : res.stopped ? "SORT is off. Recording saved." : "SORT is off");
     loadRecordings();
@@ -129,6 +183,10 @@ function refreshStatus() {
       return;
     }
     toolEnabled = s.enabled;
+    needsDisclosure = s.disclosureRequired !== false;
+    const receipt = document.getElementById("disclosureReceipt");
+    receipt.textContent = needsDisclosure ? "Recording disclosure has not been accepted. Review it when you switch SORT on."
+      : `Disclosure ${s.disclosureVersion} accepted on ${new Date(s.disclosureAcceptedAt).toLocaleString()}. Saved only in this Chrome profile.`;
     toolWorkerBusy = !!s.transitioning;
     if (s.stateError) toolError = s.stateError;
     if (s.active !== sessionActive) setSessionUI(s.active);

@@ -3,6 +3,8 @@
 // ALL tabs are recorded once a session is active.
 
 // Fixed deployment values (upload host, Odoo host/db/model, reminder interval).
+// Suppress persistent diagnostic events until the disclosure has been accepted.
+globalThis.SortDisclosureAllowsDiagnostics = () => false;
 importScripts("build-info.js", "diagnostics-core.js", "diagnostics.js");
 importScripts("defaults.js", "security.js", "updates.js");
 // Content scripts must not write call-trigger storage or read diagnostic state.
@@ -18,21 +20,61 @@ const CONFIG_STORE = "config";
 // pulling the video into memory.
 const VIDEOS_STORE = "videos";
 
-// Persistent recording enablement. Separate from credentials/settings so a
-// Settings save cannot accidentally reactivate SORT. Fail closed until loaded.
+// Disclosure version is independent of the extension release version.
+// Change it only when the disclosed practices materially change.
+const DISCLOSURE_VERSION = "1.0";
+let disclosureAcceptance = null;
+function validDisclosureAcceptance(value) {
+  return !!value && value.version === DISCLOSURE_VERSION &&
+    Number.isFinite(value.acceptedAt) && value.acceptedAt > 0 &&
+    value.action === "agree-and-enable";
+}
+function hasAcceptedDisclosure() { return validDisclosureAcceptance(disclosureAcceptance); }
+globalThis.SortDisclosureAllowsDiagnostics = hasAcceptedDisclosure;
+
+// The worker, not just the popup, enforces the gate. Older enabled installs
+// have no agreement record and migrate to OFF without deleting their settings.
 let toolEnabled = false;
 let toolEnabledSince = 0;
 let toolStateError = null;
 let toolTransition = false;
 let toolStateQueue = Promise.resolve();
-const toolReady = chrome.storage.local.get("sortToolState").then(({sortToolState}) => {
-  toolEnabled = sortToolState?.enabled !== false;
+const toolReady = chrome.storage.local.get("sortToolState").then(async ({sortToolState}) => {
+  disclosureAcceptance = validDisclosureAcceptance(sortToolState?.disclosure)
+    ? sortToolState.disclosure : null;
+  toolEnabled = hasAcceptedDisclosure() && sortToolState?.enabled === true;
   toolEnabledSince = Number(sortToolState?.since) || 0;
+  if (!hasAcceptedDisclosure() && sortToolState?.enabled === true) {
+    // Persist migration so an older enabled flag cannot silently reactivate.
+    await chrome.storage.local.set({sortToolState: {enabled: false, since: Date.now()}});
+  }
 }).catch(() => {
-  toolStateError = "Could not read SORT's saved on/off state. Try switching it on again.";
+  toolEnabled = false;
+  disclosureAcceptance = null;
+  toolStateError = "Could not read SORT's saved state. SORT remains off; reopen the popup to retry.";
 }).then(() => updateBadge(false));
 
+function disclosureRequired() {
+  return {success: false, enabled: false, needsDisclosure: true,
+    disclosureVersion: DISCLOSURE_VERSION,
+    error: "Read and agree to the recording disclosure before enabling SORT."};
+}
+function acceptDisclosureAndEnable(version, affirmative) {
+  const operation = toolStateQueue.then(async () => {
+    await toolReady;
+    if (affirmative !== true || version !== DISCLOSURE_VERSION)
+      return {success: false, enabled: toolEnabled, error: "The disclosure changed or agreement was not supplied. Reopen the popup and try again."};
+    // Preserve the original acceptance time on repeated clicks or ordinary toggles.
+    const acceptance = hasAcceptedDisclosure() ? disclosureAcceptance : {
+      version: DISCLOSURE_VERSION, acceptedAt: Date.now(), action: "agree-and-enable"
+    };
+    return applyToolEnabled(true, acceptance);
+  });
+  toolStateQueue = operation.catch(() => {});
+  return operation;
+}
 function toolUnavailable() {
+  if (!hasAcceptedDisclosure()) return {...disclosureRequired(), disabled: true};
   return {success: false, disabled: true, error: "SORT is off. Switch it on in the popup to record."};
 }
 function publishToolState() {
@@ -45,8 +87,10 @@ function setToolEnabled(enabled) {
   toolStateQueue = operation.catch(() => {});
   return operation;
 }
-async function applyToolEnabled(enabled) {
+async function applyToolEnabled(enabled, newAcceptance = null) {
   await toolReady;
+  if (enabled && !hasAcceptedDisclosure() && !validDisclosureAcceptance(newAcceptance))
+    return disclosureRequired();
   if (enabled === toolEnabled && !toolStateError && !(activeSession && !enabled))
     return {success: true, enabled: toolEnabled};
   toolTransition = true;
@@ -59,8 +103,13 @@ async function applyToolEnabled(enabled) {
     const since = Date.now();
     let persistenceError = null;
     try {
-      await chrome.storage.local.set({sortToolState: {enabled, since}});
-      toolEnabled = enabled;
+      const acceptance = validDisclosureAcceptance(newAcceptance) ? newAcceptance : disclosureAcceptance;
+      const state = {enabled, since};
+      if (validDisclosureAcceptance(acceptance)) state.disclosure = acceptance;
+      // Acceptance and enabled state are committed together before polling starts.
+      await chrome.storage.local.set({sortToolState: state});
+      disclosureAcceptance = validDisclosureAcceptance(acceptance) ? acceptance : null;
+      toolEnabled = enabled && hasAcceptedDisclosure();
       toolEnabledSince = since;
       toolStateError = null;
     } catch (_) {
@@ -1076,6 +1125,17 @@ chrome.runtime.onConnect.addListener((p) => {
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes.sortToolState) return;
+  if (validDisclosureAcceptance(changes.sortToolState.newValue?.disclosure)) return;
+  if (!hasAcceptedDisclosure() && !toolEnabled) return;
+  disclosureAcceptance = null;
+  toolEnabled = false;
+  toolStateError = "Recording disclosure acceptance was cleared. SORT remains off.";
+  // Block immediately, then queue normal stop/save and poll shutdown.
+  void setToolEnabled(false);
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local" || !changes.callTrigger) return;
   consumeTrigger(changes.callTrigger.newValue);
 });
@@ -1193,6 +1253,7 @@ syncCallPoller();
 
 const WORKER_MESSAGE_PAGES = {
   startSession: ["popup.html"], stopSession: ["popup.html"], setToolEnabled: ["popup.html"],
+  acceptDisclosureAndEnable: ["popup.html"],
   callStarted: ["offscreen.html"], callStateStarted: ["offscreen.html"],
   callStateEnded: ["offscreen.html"], callStateAdopted: ["offscreen.html"], callPollError: ["offscreen.html"],
   syncCallPoller: ["popup.html"], callPollerStatus: ["popup.html"], probeCallEndpoint: ["popup.html"],
@@ -1228,6 +1289,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
   switch (message.type) {
+
+    case "acceptDisclosureAndEnable":
+      acceptDisclosureAndEnable(message.version, message.affirmative).then(sendResponse);
+      return true;
 
     case "setToolEnabled":
       setToolEnabled(message.enabled).then(sendResponse);
@@ -1408,6 +1473,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case "getSessionStatus":
       toolReady.then(() => sendResponse({
         enabled: toolEnabled, transitioning: toolTransition, stateError: toolStateError,
+        disclosureRequired: !hasAcceptedDisclosure(), disclosureVersion: DISCLOSURE_VERSION,
+        disclosureAcceptedAt: hasAcceptedDisclosure() ? disclosureAcceptance.acceptedAt : null,
         active: !!activeSession,
         tabCount: activeSession ? Object.keys(activeSession.tabs).length : 0,
         eventCount: activeSession ? activeSession.events.length : 0,

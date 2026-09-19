@@ -156,6 +156,35 @@
     .tab-content { display: none; padding: 16px; max-width: 100%; overflow-x: hidden; }
     .tab-content.active { display: block; }
 
+    /* Give the scrollable disclosure room even on an empty Recordings tab. */
+    html:has(.disclosure-dialog[open]) { min-height: 580px; }
+    .disclosure-dialog {
+      margin: auto; width: calc(100% - 16px); max-width: 344px;
+      max-height: min(560px, calc(100vh - 16px)); padding: 0;
+      border: 1px solid var(--edge2); border-radius: 8px;
+      background: var(--surface); color: var(--ink); overflow: hidden;
+    }
+    .disclosure-dialog::backdrop { background: rgba(0, 0, 0, .72); }
+    .disclosure-layout { display: flex; flex-direction: column; max-height: min(558px, calc(100vh - 18px)); }
+    .disclosure-heading { padding: 14px 14px 10px; border-bottom: 1px solid var(--edge); flex: none; }
+    .disclosure-heading h2 { font-size: 16px; line-height: 1.35; color: var(--ink-strong); }
+    .disclosure-version { font-size: 11px; line-height: 1.4; color: var(--ink-soft); margin-top: 4px; }
+    .disclosure-body { padding: 12px 14px; overflow-y: auto; min-height: 0; font-size: 12px; line-height: 1.5; }
+    .disclosure-body h3 { font-size: 12px; margin: 14px 0 5px; color: var(--ink-strong); }
+    .disclosure-body h3:first-child { margin-top: 0; }
+    .disclosure-body p + p { margin-top: 8px; }
+    .disclosure-body ul { padding-left: 17px; }
+    .disclosure-body li + li { margin-top: 6px; }
+    .disclosure-body a { color: var(--link); text-underline-offset: 2px; }
+    .disclosure-body a:focus-visible, .disclosure-body:focus-visible { outline: 2px solid var(--link); outline-offset: -2px; }
+    .disclosure-actions { padding: 10px 14px 12px; border-top: 1px solid var(--edge); flex: none; }
+    .disclosure-actions p { font-size: 11px; line-height: 1.45; margin-bottom: 8px; }
+    .disclosure-actions .btn { display: block; width: 100%; white-space: normal; line-height: 1.4; }
+    .disclosure-actions .btn + .btn { margin-top: 8px; margin-bottom: 0; }
+    .disclosure-actions .btn:disabled { opacity: .65; cursor: wait; }
+    .disclosure-error { color: var(--alert-ink); }
+    .disclosure-receipt { color: var(--ink-soft); font-size: 11px; line-height: 1.45; margin-top: 8px; }
+
     /* ---- Settings ---- */
     .privacy-link {
       display: inline-block; max-width: 100%; padding: 5px 0;
@@ -456,10 +485,55 @@
          rel="noopener noreferrer" referrerpolicy="no-referrer"
          aria-describedby="privacyNoticeHelp">Privacy &amp; data use</a>
       <p id="privacyNoticeHelp" class="privacy-note">Read the SORT privacy notice. Opens in a new tab.</p>
+      <p id="disclosureReceipt" class="disclosure-receipt">Checking disclosure status...</p>
     </fieldset>
 
     <button class="btn btn-primary" id="saveConfig">Save settings</button>
   </div>
+
+  <dialog id="recordingDisclosure" class="disclosure-dialog" aria-labelledby="disclosureTitle"
+          aria-describedby="disclosureIntro" data-version="1.0">
+    <div class="disclosure-layout">
+      <header class="disclosure-heading">
+        <h2 id="disclosureTitle">Before you enable SORT</h2>
+        <p class="disclosure-version">Recording disclosure &middot; version 1.0</p>
+      </header>
+      <div class="disclosure-body" tabindex="0" autofocus>
+        <p id="disclosureIntro"><strong>SORT stays off until you agree.</strong> GoodBytz GmbH uses SORT for designated customer-support and troubleshooting sessions. Please read what is recorded and how it is used.</p>
+        <h3>What is recorded</h3>
+        <ul>
+          <li><strong>Screen video, without audio:</strong> the screen, window or tab you select in Chrome&rsquo;s sharing dialog.</li>
+          <li><strong>Structured activity across browser tabs:</strong> clicks, scrolling, keyboard interactions, entered field values, page titles, URLs, navigation, network-request information and WebSocket message payloads. <strong>This is not limited to the source selected for video</strong> and can include data not visible on screen.</li>
+          <li>Recordings can identify you and customers, including your configured Sipgate name, caller names and linkable system or ticket identifiers. Password-field masking is not comprehensive redaction. Avoid unrelated personal or sensitive content.</li>
+        </ul>
+        <h3>How GoodBytz uses it</h3>
+        <ul>
+          <li>Documenting and resolving support cases and debugging and improving products.</li>
+          <li>Reviewing support quality, individual coaching and improving team processes. The stated purposes do not include automated employee scoring or pay, promotion or disciplinary decisions.</li>
+          <li><strong>AI training, fine-tuning and evaluation:</strong> only human-reviewed, de-identified structured-timeline extracts on company-controlled systems. <strong>No video is used for AI.</strong> De-identification does not necessarily mean anonymity.</li>
+        </ul>
+        <h3>Access, storage and transmission</h3>
+        <p>Recordings are stored locally and can be uploaded to GoodBytz&rsquo;s recording server. Access is limited by role to authorized recording employees, support/service staff, engineering/AI staff and team leads/management. AI use is limited to the reviewed extracts. Odoo stores a recording link, not a copy of the video or timeline.</p>
+        <p>The upload server, Odoo and company-controlled AI systems are hosted in Germany. Uploads use <strong>HTTP through the mandatory company VPN</strong>, not HTTPS at the upload endpoint. SORT does not independently enforce VPN connectivity or guarantee encryption beyond VPN termination.</p>
+        <h3>Retention</h3>
+        <p>Uploaded recordings and AI extracts are deleted one month after the <strong>original recording date</strong>; uploaded recordings have no server backups. Odoo recording links are removed with the recording. <strong>You must manually delete local recordings and exports within the same period.</strong> Deleting AI extracts does not automatically remove their influence from trained models; underlying tickets have separate retention.</p>
+        <h3>Other local data and services</h3>
+        <p>SORT uses your configured name, Odoo email/API key and call-state token. Credentials remain in this Chrome profile without additional application-level encryption, not Chrome Sync. The relevant services receive requests and credentials needed for their functions. Automatic call-state polling runs only while SORT is on and configured.</p>
+        <p>After agreement, bounded diagnostic logs are retained locally for up to 7 days, 5 MiB or 5,000 entries, whichever limit is reached first. Diagnostic exports are user-requested and are not automatically uploaded.</p>
+        <h3>Your controls and this agreement</h3>
+        <p>Enabling SORT does not itself begin a screen recording. Recordings can be started manually or triggered by relevant calls while SORT is on. Chrome still asks you to choose a video source. Cancelling that choice cancels both video and timeline recording. Switching SORT off stops and saves an active recording and blocks new manual and automatic recordings.</p>
+        <p>Your agreement is saved in this Chrome profile with this disclosure&rsquo;s version and a timestamp. It is not requested again on normal off/on switches or browser restarts. A materially revised disclosure or cleared extension data requires agreement again. The local record is not an employee signature or a centralized acknowledgment record.</p>
+        <p>Recording remains required for designated work activities under company policy. This agreement does not by itself establish freely given GDPR consent for mandatory workplace processing. Questions or rights requests: <a href="mailto:leon.weber@goodbytz.com">leon.weber@goodbytz.com</a>.</p>
+        <p><a href="https://leonw-gb.github.io/" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Read the full privacy notice (opens a new tab)</a>. GitHub hosts that notice and logs visitor IP addresses for security.</p>
+      </div>
+      <footer class="disclosure-actions">
+        <p>By choosing <strong>Agree and enable SORT</strong>, you affirmatively agree to the collection and uses described above.</p>
+        <p id="disclosureError" class="disclosure-error" role="alert" hidden></p>
+        <button id="agreeDisclosure" type="button" class="btn btn-primary">Agree and enable SORT</button>
+        <button id="deferDisclosure" type="button" class="btn btn-secondary">Not now</button>
+      </footer>
+    </div>
+  </dialog>
 
   <script src="build-info.js"></script>
   <script src="diagnostics-core.js"></script>
