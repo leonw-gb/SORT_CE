@@ -811,15 +811,77 @@ const ICON_RECORDING = {
   48: "icons/recording48.png", 128: "icons/recording128.png"
 };
 
-function updateBadge(recording) {
-  const icon = !toolEnabled ? ICON_INACTIVE : (recording ? ICON_RECORDING : ICON_IDLE);
-  chrome.action.setIcon({ path: icon }).catch(() => {});
-  chrome.action.setTitle({
-    title: recording ? "SORT - recording" : (toolEnabled ? "SORT - ready" : "SORT - off")
-  }).catch(() => {});
-  // The icon alone indicates state; also clear any badge left by older builds.
-  chrome.action.setBadgeText({ text: "" }).catch(() => {});
+// Keep one icon writer so state transitions cannot overwrite the update marker.
+let toolbarQueue = Promise.resolve();
+let toolbarRevision = 0;
+let toolbarRecording = false;
+const updateIconCache = new Map();
+async function updateIconData(paths) {
+  const key = paths[16];
+  if (!updateIconCache.has(key)) {
+    const drawing = (async () => {
+      const images = {};
+      for (const size of [16, 32, 48, 128]) {
+        const response = await fetch(chrome.runtime.getURL(paths[size]));
+        if (!response.ok) throw new Error('Toolbar icon could not be read');
+        const bitmap = await createImageBitmap(await response.blob());
+        const canvas = new OffscreenCanvas(size, size);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('Toolbar canvas unavailable');
+        ctx.drawImage(bitmap, 0, 0, size, size);
+        bitmap.close();
+        // Lower-right marker leaves the existing upper-right state dot intact.
+        ctx.save(); ctx.scale(size / 128, size / 128);
+        ctx.fillStyle = '#FFBF32'; ctx.strokeStyle = '#20242C'; ctx.lineWidth = 6;
+        ctx.beginPath(); ctx.roundRect(68, 68, 57, 57, 10); ctx.fill(); ctx.stroke();
+        // Filled upward arrow: use shape, not a font glyph, for tiny sizes.
+        ctx.fillStyle = '#20242C'; ctx.beginPath();
+        ctx.moveTo(96.5, 78); ctx.lineTo(115, 97); ctx.lineTo(103, 97);
+        ctx.lineTo(103, 115); ctx.lineTo(90, 115); ctx.lineTo(90, 97);
+        ctx.lineTo(78, 97); ctx.closePath(); ctx.fill(); ctx.restore();
+        images[size] = ctx.getImageData(0, 0, size, size);
+      }
+      return images;
+    })();
+    updateIconCache.set(key, drawing);
+    drawing.catch(() => updateIconCache.delete(key));
+  }
+  return updateIconCache.get(key);
 }
+function updateBadge(recording) {
+  toolbarRecording = !!recording;
+  const revision = ++toolbarRevision;
+  const task = toolbarQueue.then(async () => {
+    if (revision !== toolbarRevision) return;
+    const saved = await chrome.storage.local.get(['sortUpdate.v1', 'sortNotificationTest.v1']);
+    if (revision !== toolbarRevision) return;
+    const pending = saved['sortUpdate.v1']?.pending;
+    const realUpdate = typeof pending === 'string' && /^\d+(\.\d+){0,3}$/.test(pending) &&
+      pending !== chrome.runtime.getManifest().version;
+    const testUpdate = saved['sortNotificationTest.v1']?.indicator === true;
+    const recordingNow = toolEnabled && toolbarRecording;
+    const paths = !toolEnabled ? ICON_INACTIVE : recordingNow ? ICON_RECORDING : ICON_IDLE;
+    const label = !toolEnabled ? 'off' : recordingNow ? 'recording' : 'ready';
+    let imageData = null;
+    if (realUpdate || testUpdate) {
+      try { imageData = await updateIconData(paths); }
+      catch (e) { console.warn('SORT update icon:', String(e.message || e)); }
+    }
+    if (revision !== toolbarRevision) return;
+    await chrome.action.setIcon(imageData ? {imageData} : {path: paths});
+    await chrome.action.setTitle({title: `SORT - ${label}` + (realUpdate
+      ? ` - update ${pending} ready. Click to review.`
+      : testUpdate ? ' - TEST update indicator. Click SORT; clear in Settings.' : '')});
+    // No text badge: the arrow is part of the icon, not an UPD/OFF badge.
+    await chrome.action.setBadgeText({text: ''});
+  });
+  toolbarQueue = task.catch(e => console.warn('SORT toolbar:', String(e.message || e)));
+  return toolbarQueue;
+}
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && (changes['sortUpdate.v1'] || changes['sortNotificationTest.v1']))
+    void updateBadge(!!activeSession);
+});
 
 // A service worker restart loses the icon, so restore it whenever the worker
 // wakes: without this the toolbar can sit on the red dot after a crash.
@@ -1267,7 +1329,9 @@ const WORKER_MESSAGE_PAGES = {
   exportRecording: ["popup.html", "player.html"], consumeNameWarning: ["popup.html"],
   openImport: ["popup.html"], importFinished: ["import.html"],
   getUpdateStatus: ["popup.html"], checkForUpdate: ["popup.html"], restartForUpdate: ["popup.html"],
-  deferUpdate: ["popup.html"]
+  deferUpdate: ["popup.html"],
+  getNotificationTestStatus: ["popup.html"], scheduleNotificationTest: ["popup.html"],
+  clearNotificationTest: ["popup.html"]
 };
 function allowWorkerMessage(message, sender) {
   if (!message || typeof message.type !== "string") return false;
@@ -1520,6 +1584,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sipgateName: c.sipgateName, upload: c.upload, odoo: c.odoo} : {theme: c.theme})).catch(() => sendResponse({success: false, error: "Settings could not be loaded."}));
       return true;
 
+    case "getNotificationTestStatus":
+      SortUpdates.notificationTestStatus().then(sendResponse); return true;
+    case "scheduleNotificationTest":
+      SortUpdates.scheduleNotificationTest().then(sendResponse); return true;
+    case "clearNotificationTest":
+      SortUpdates.clearNotificationTest().then(sendResponse); return true;
     case "getUpdateStatus":
       SortUpdates.status().then(sendResponse); return true;
     case "checkForUpdate":

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SORT</title>
+  <title>SORT - LOCAL TOOLBAR UPDATE TEST</title>
   <style>
     /* Two themes, dark by default. Every colour below is a token, so the
        toggle flips one attribute on <html> and nothing else has to know. */
@@ -351,6 +351,8 @@
   </div>
   <div id="toolStateNote" class="tool-state-note" role="status" aria-live="polite">Loading SORT status…</div>
 
+  <p class="help-text" style="margin:8px 12px;color:var(--link)"><strong>LOCAL TOOLBAR UPDATE TEST BUILD - not for Store upload</strong></p>
+  <p id="toolbarTestNotice" class="help-text" role="status" hidden style="margin:8px 12px;color:var(--link)">TEST update marker active. No update is pending from this simulation. Clear it in Settings → Local toolbar-update test.</p>
   <div class="session-panel">
     <button class="btn-record" id="btnRecord" disabled>▶ Start Recording</button>
     <div class="record-note">Records your screen and every tab action. No audio.</div>
@@ -468,6 +470,14 @@
       <button class="btn btn-secondary" id="clearCredentials">Remove saved tokens</button>
       <button class="btn btn-secondary" id="checkUpdate">Check for updates</button>
       <div id="updateCheckStatus" class="help-text" role="status">Chrome also checks automatically. Store-managed installations only.</div>
+    </fieldset>
+    <fieldset id="notificationTestPanel">
+      <legend>Local toolbar-update test</legend>
+      <div class="help-text">The amber arrow appears on the pinned toolbar icon immediately and stays until cleared. The desktop notification follows in about 10 seconds. Simulation only: no update check, download, install or restart. Works while SORT is Off; no recording setup is needed.</div>
+      <button class="btn btn-secondary" id="scheduleNotificationTest" type="button">Show update icon now + notification in 10s</button>
+      <button class="btn btn-secondary" id="clearNotificationTest" type="button">Clear test icon and notification</button>
+      <div id="notificationTestStatus" class="help-text" role="status" aria-live="polite">Loading test status...</div>
+      <div class="help-text">Close this popup after scheduling. Timing is approximate. If Chrome fully quits, the test runs after Chrome starts again. Chrome accepting the request does not guarantee the OS shows a banner.</div>
     </fieldset>
     <fieldset>
       <legend>Support</legend>
