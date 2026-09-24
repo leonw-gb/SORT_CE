@@ -1,5 +1,9 @@
 # SORT update news
 
+## 2.30.4
+
+- **README:** rewrote the README file to represent the current status. Fixed some minor spelling
+
 ## 2.30.3
 
 - **What's new:** after an update, the popup shows a short notice with a link to these release notes. They are also available anytime under Settings > Updates.

@@ -1,527 +1,317 @@
-# SORT — Session Observer Recorder Tracker (Chrome Extension)
-
-Records expert problem-solving across multiple tabs on ONE correlated timeline:
-clicks (with resolved labels, incl. Flutter semantics), inputs, tab switches,
-navigation/SPA routes, network calls, WebSocket action frames (NiceGUI ground
-truth), and SOP step tags.
-
-VISUAL capture is intentionally NOT part of this build - use any external
-screen recorder alongside it. This keeps recordings small and 100% reliable
-(no DOM-replay edge cases). The player page still shows the full correlated
-timeline; the visual replay pane shows a notice instead.
-
-
-Goals: (1) verify experts follow the correct SOP, (2) build a labeled action dataset
-to later train an AI to solve the issues itself.
-
-## Files
-  manifest.json        MV3 manifest
-  background.js        Service worker: shared session, storage, export
-  content.js           Per-page capture + rrweb + floating SOP tagger
-  tagger.css           Styling for the floating SOP tagger
-  popup.html/.js       Settings, live session controls, recordings list
-  player.html/.js      Visual replay + correlated SOP timeline viewer
-  sortz.js             .sortz session bundle: read and write (no DOM, reusable)
-  offscreen.html/.js   Builds bundles off the worker (blob URLs + survives idle)
-  import.html/.js      Import window: preview a bundle, then store it
-  SESSION-FORMAT.md    Bundle schema + the upload-server contract
-  lib/                 rrweb + rrweb-player (PLACEHOLDERS - see below)
-
-## Enable rrweb DOM replay (one-time, needs internet on your machine)
-This was built offline, so lib/ contains placeholders. To enable pixel-perfect replay:
-  1. rrweb.min.js
-       https://cdn.jsdelivr.net/npm/rrweb@2.0.0-alpha.4/dist/rrweb.min.js  -> lib/rrweb.min.js
-  2. rrweb-player.min.js
-       https://cdn.jsdelivr.net/npm/rrweb-player@1.0.0-alpha.4/dist/index.js -> lib/rrweb-player.min.js
-  3. rrweb-player.css
-       https://cdn.jsdelivr.net/npm/rrweb-player@1.0.0-alpha.4/dist/style.css -> lib/rrweb-player.css
-Overwrite the placeholder files with the same names. If you skip this, everything still
-works EXCEPT the visual DOM replay - the correlated SOP timeline and JSON export are unaffected.
-
-## Install
-  1. Unzip. Open chrome://extensions -> enable Developer mode -> Load unpacked -> select folder.
-  2. Click the icon -> Settings:
-       - Add URL patterns (regex or plain text), one per line.
-       - Optionally edit the SOP Steps shown in the tagger.
-       - Save Configuration.
-
-## How it works
-- Open any tab whose URL matches a pattern -> it auto-joins ONE shared session.
-- A floating SOP tagger appears bottom-right. The expert clicks the current step as
-  they work; every event after that is labeled with the active step. They can add notes.
-- All tabs share one clock: each event has tabId + relativeTime from session start.
-- In the popup, a red bar shows the live session (tab count, event count) with
-  "Stop & Save Session". Stopping writes the session to IndexedDB.
-
-## Review, replay & export
-- Recordings tab lists saved sessions.
-    Replay      -> opens the viewer: rrweb DOM playback + clickable SOP timeline,
-                   filter by tab, click any event to jump the replay to that moment.
-    Export JSON -> downloads the full session for your training pipeline.
-    Delete      -> removes from IndexedDB.
-
-## Data format (one JSON object per session)
-  id, startTime, endTime, sopSteps[]
-  tabs: { tabId: { url, title } }
-  events[]: each with tabId, timestamp, relativeTime, and sopStep (active step label).
-    Types: interaction (click/input/change/submit + xpath + element identity),
-    rrweb (DOM snapshot stream), sopStep, sopNote, scroll, tabEntered, tabSwitch,
-    tabClosed, visibilityChange, historyChange, networkRequest, snapshot.
-
-## Privacy / PII
-- All form input/change/submit VALUES are masked by default (length-preserving). Passwords never captured.
-- rrweb records with maskAllInputs=true.
-- To capture a field in cleartext: add its id/name to SAFE_FIELD_ALLOWLIST in content.js,
-  or add the attribute data-record-safe to the element.
-- Add class "record-block" to any element that must never be recorded/replayed.
-
-## Limits
-- Cannot record chrome:// pages, the Web Store, or other extensions' pages.
-- Cross-origin iframes not captured (all_frames off).
-- rrweb alpha pins above are examples; any recent matching rrweb / rrweb-player pair works.
-
-## v1.14.0 - Camera <video> feed replay
-Camera pages render the live stream into an HTML <video> fed by a blob:/MSE/WebRTC
-source. rrweb records the tag but not its pixels, and the blob URL dies with the
-session, so the feed replayed BLACK. Fixes:
-  * content.js samples each playable <video> at ~5 fps (webp q=0.5), downscaled to
-    <=640px wide, and emits it as "videoFrame" custom events (dedup on unchanged
-    frames). Detection pierces shadow roots and waits for the stream to attach.
-  * player.js positions an overlay <canvas> exactly over the replayed <video> and
-    paints the frame matching the playhead (play, pause, seek, scrub).
-  * WebSocket recording is now SUPPRESSED only on video-feed pages (the media
-    frames are binary/truncated and can't be reconstructed - they caused the
-    17MB/2562-event sessions). All other pages keep full WS action capture.
-
-## v1.16.0 - SPA replay empty after login->feed route change
-The camera portal is a single-page app (login -> dashboard -> camera feed are
-in-place route changes on ONE document). rrweb records ONE full DOM snapshot at
-Start plus incremental mutations; when you start on the login page, only the
-login DOM is snapshotted, and the router later rebuilds the whole view (incl.
-<head>/stylesheets). Rebuilding the later route from the login snapshot alone is
-unreliable, so its REPLAY came up empty (starting recording already on the feed
-worked because it got its own snapshot). Fixes:
-  * Force a fresh rrweb full snapshot (checkout) shortly after every route
-    change, so each route has a complete, self-contained checkpoint to replay
-    from. Detected via pushState/replaceState/popstate/hashchange plus a URL
-    poll safety net (some routers don't call a history API we can wrap).
-  * Video + Flutter detectors remain persistent and are re-armed per route; WS
-    media-frame suppression toggles dynamically when a live <video> is present.
-  * MAIN-world hooks (ws-hook.js) wrapped in extra try-guards so instrumentation
-    can never throw into the host app (defensive; the live app was never the
-    problem here).
-
-## v1.17.0 - Live camera feed replay: "split second then black"
-The live feed replayed for a moment then went black, while the History scrubber
-(which re-renders on each drag) always showed frames. Root cause: the live player
-SWAPS the <video> element as the stream connects, so the rrweb node id in early
-videoFrame events goes stale, and the overlay stayed bound to the old/detached
-element. The route-change checkout snapshot also rebuilt the iframe DOM, wiping
-the overlay. Fixes (player.js):
-  * Video painter is now element-agnostic: resolves the largest ATTACHED/visible
-    <video> in the replay each paint (not a fixed id), and keys its overlay by
-    the live node so element swaps re-target automatically.
-  * A lightweight requestAnimationFrame driver keeps the overlay painting the
-    current-playhead frame, so continuous playback and post-rebuild states can no
-    longer leave it black. paint() dedups so idle cost stays low.
-  * On fullsnapshot-rebuilded (route checkout) the overlay is re-created and
-    repainted for the current time.
-
-## v1.18.0 - Live feed route replayed all-white (settled snapshot)
-The live feed is the DEFAULT route right after login, so the route-change
-checkout snapshot (v1.16) was firing on a blind 600ms timer WHILE the SPA was
-still tearing down the login view - capturing a transient empty DOM. That empty
-snapshot became the replay checkpoint for the feed route -> all white, no
-interface. History worked because it's opened by a deliberate click later, when
-the DOM is stable. Fix (content.js):
-  * Replaced the fixed-delay checkout with a "settled" snapshot: it waits until
-    the body has real content whose size stopped changing for two consecutive
-    checks (the new view finished mounting), with a hard cap so a continuously
-    -mutating view still gets a checkpoint.
-  * On a video-feed route it additionally waits for a playable <video> before
-    snapshotting, so the checkpoint captures the mounted feed, not a placeholder.
-
-## v1.19.0 - Remove per-route checkout; single settled base snapshot
-Evidence: a session STARTED with the feed already loaded replays every route
-(login -> history -> back to live) perfectly from incremental mutations alone.
-So incremental replay is reliable for this app; the per-route checkout snapshot
-added in v1.16-v1.18 was itself CAUSING the live-feed route to replay white
-(mid-stream checkout FullSnapshots are a known rrweb cause of blank replay -
-events after the checkpoint fail to apply). Changes (content.js):
-  * Removed the route-change checkout snapshot entirely. Camera pixels come from
-    the videoFrame overlay, not the DOM snapshot, so no checkpoint is needed for
-    the feed to be visible.
-  * Added ONE non-checkout full snapshot, taken only when the app auto-navigated
-    after recording started (login -> feed) AND once the first app view has
-    settled (non-empty, stable body). This gives login-start sessions the same
-    good base an already-loaded session has, without per-route churn. Sessions
-    that start already on the app view skip it (their initial snapshot is good).
-
-## v1.20.0 - Live feed area white on first view (until navigate away+back)
-After v1.19 the interface reconstructs correctly, but the LIVE feed content area
-stayed white on first view and only appeared after navigating to History and
-back. Two causes, both fixed:
-  * Recorder: the one-time base snapshot fired once the body was merely "stable",
-    but the UniFi Protect live player mounts its <video> asynchronously AFTER
-    that - so the snapshot captured an empty feed shell. It now also waits for a
-    playable <video> on video-feed routes before snapshotting.
-  * Player: the replayed <video> often has a 0x0 layout box on first render (the
-    app sizes it via JS that doesn't run offline), so the overlay was placed at
-    0x0 and was invisible. The overlay now sizes/positions to the video's
-    nearest sized ancestor (the player holder), falling back to the replay
-    viewport, and prefers the exact captured element by mirror id.
-
-
-
-## Sharing sessions (v2.23.0)
-
-A session can be handed to someone else as a **`.sortz` bundle**: a ZIP holding
-the manifest, the event timeline and the video, complete enough to open on a
-machine that never saw the recording.
-
-**Export** — the Export button on any of your own recordings. The bundle is
-built in an offscreen document, not in the popup, because Chrome closes a popup
-the moment focus moves and a few hundred megabytes takes longer than that.
-Clicking away no longer kills the export.
-
-**Import** — *Import a session…* above the recordings list. The bundle is shown
-first (who recorded it, when, how long, how big) and only stored once you
-confirm, because an import costs the same disk as a recording.
-
-An imported session gets a **fresh local id**; recording ids are minted per
-machine, so without a remap an import can collide with one of your own and
-silently overwrite it. The original travels on as `sourceId`, which is also how
-a repeat import is recognised. Imported sessions are marked in the list with the
-recorder's name and cannot be re-exported or assigned to a ticket — they are
-someone else's record.
-
-The video is embedded in the bundle rather than linked. Uploaded videos are
-deleted from the upload server after the retention period, and a bundle that
-carried only a link would decay into a timeline with a dead player. **The bundle
-is the durable copy of a session.**
-
-Long term the upload server hosts sessions itself and the ticket gets a session
-link instead of a video link. `SESSION-FORMAT.md` has the schema and the
-endpoint contract; `upload.js` already prefers a `session_url` when the server
-returns one, so that switch needs no extension release.
-
-## The Sipgate name is required (v2.23.0)
-
-Recording will not start without it. The check sits in `startSession`, so it
-covers the popup button, the keyboard shortcut and the call trigger alike —
-putting it in the popup would leave the shortcut free to produce anonymous
-sessions. Refusal happens *before* the screen picker opens, so nobody chooses a
-window for a recording that is about to be turned down. Started by shortcut, the
-refusal arrives as a Chrome notification, since there is no popup to show it in.
-
-The name is stamped onto the session when recording starts, so a bundle says who
-made it, not who sent it on. Sessions recorded before 2.23.0 have no name and
-show as "Unknown".
-
-## v2.23.1 - Imported sessions had no video
-
-Two bugs from the 2.23.0 sharing work.
-
-**No video on an imported session.** The source-agnostic loader wired
-`getVideo` to `loadVideo` -- the render function that calls it -- instead of
-`loadVideoBlob`, the one that reads the store. The recursion threw, the catch
-turned it into "no video", and the player reported a capture failure for a file
-that was sitting in IndexedDB the whole time. Hence a bundle whose .webm played
-perfectly when unzipped by hand.
-
-Three things were hardened at the same time, because that one message was
-covering for all of them:
-
-- Imported sessions no longer trust `video.captured` from the bundle. That flag
-  describes the machine that recorded it; what matters locally is whether a blob
-  actually arrived, so the store is checked directly.
-- The video blob is materialised before it is written. `SORTZ.parse` slices the
-  video out of the zip, so the blob is a view over the File the operator picked
-  -- and that File goes away when the import window closes.
-- The write is read straight back and the size compared. A silent storage
-  failure now fails the import instead of producing a session with a dead
-  player.
-
-**Ticket showed as 9741_002.** The `_NNN` counts repeat recordings of a ticket
-and belongs to the video filename, not the ticket. Pasted into Odoo it finds
-nothing. The import preview now shows `9741 (recording 2)` and the recordings
-list shows `9741 · #2`, with the suffix omitted entirely for a first recording.
-
-## v2.23.2 - Import wording and flow
-
-- The import preview's **Ticket** row is now **Session**, and shows the full
-  session identifier again (`9741_002`). It is the same string as the video
-  filename and the ticket link, so it is a thing you can search for; the earlier
-  split into "9741 (recording 2)" made it unmatchable.
-- The recordings list shows the same identifier after the recorder's name.
-- **Importing no longer opens the timeline.** The session lands in the list and
-  the operator opens it if they want to. Importing several bundles in a row no
-  longer opens several tabs.
-
-## v2.23.3 - Timeline follows the playhead; refusal is visible
-
-**The log follows the video.** The highlighted row is useless once it has
-scrolled out of view, so the timeline now scrolls to keep it on screen, parking
-it a third of the way down so the next few actions stay visible.
-
-It does not fight you. Scrolling by hand suspends following -- reading ahead or
-looking back is the point of a timeline -- and a small hint says so. Following
-resumes on its own once the playhead catches up to where you are reading, or
-immediately if you seek the video or click a row. There is nothing to switch on.
-
-Two details that took care: the sticky SOP step header overlaps the top of the
-log, so a row is only "visible" below it (otherwise following stops one row
-early and the active row hides under the header); and `body { zoom }` scales
-`getBoundingClientRect` but not `scrollTop`, so the delta is converted back to
-layout pixels the same way the splitter does. `scrollIntoView` is deliberately
-not used -- it scrolls the nearest scrollable ancestor, which here can be the
-window, dragging the whole layout. Large jumps are instant, single steps glide,
-and `prefers-reduced-motion` turns gliding off.
-
-**The missing-name refusal was invisible.** `chrome.notifications.create()` was
-called without its callback, so `chrome.runtime.lastError` went unread and a
-suppressed notification failed silently -- which is what happened on both
-machines. Notifications are unreliable here by nature: macOS gates them behind
-Focus and per-app permission, Windows behind Focus assist, and Chrome suppresses
-banners while a screen is being shared, which is exactly when SORT is in use.
-
-So the signal no longer depends on them. A pink **!** badge appears on the
-toolbar icon -- always visible, nothing can suppress it -- with a matching
-tooltip, and SORT tries to open its own popup on the field that is missing.
-The notification is now a bonus rather than the mechanism, `lastError` is logged
-instead of swallowed, and the badge clears the moment a name is saved.
-
-## v2.23.4 - The summoned popup lands on the right field
-
-A popup opened by `chrome.action.openPopup()` receives no message and no
-arguments -- it is indistinguishable from the operator clicking the toolbar
-icon. So it opened on Recordings and said nothing, while the badge next to it
-complained about a field two tabs away.
-
-The worker now records the reason in `chrome.storage.session` before opening
-(session storage, not a worker variable: the worker can be torn down in
-between), and the popup asks for it on load. The flag is read-and-cleared, so
-it fires once -- reopening the popup afterwards behaves normally.
-
-The same flag covers the case where Chrome refuses to open the popup: click the
-badge yourself and you still land on the flagged field.
-
-Focus is deferred one frame, because the field is inside a hidden tab panel
-until the switch has laid out and both the scroll and the focus would otherwise
-be dropped.
-
-## Toolbar icon states
-
-Green dot = installed and ready. Red dot = recording. The service worker swaps
-`chrome.action.setIcon` on start and stop and restores the idle icon when it
-wakes, so a worker restart cannot strand the toolbar on the red dot.
-
-The files in `icons/` are placeholders. See `icons/README.md` for what to drop
-in and how to resize the existing artwork.
-
-## The "SORT is sharing your screen" bubble
-
-Chrome shows this bubble whenever any extension or page captures the screen, and
-**no API can hide it**. It is browser-owned UI, deliberately out of reach of
-page and extension JavaScript: if code could suppress it, silent screen
-recording would be trivial. `chrome.desktopCapture` and `getDisplayMedia()`
-behave the same way on current Chrome.
-
-Two things that do help:
-
-1. **Press "Hide"** on the bubble. It stays dismissed for that share, so it is
-   one click per recording, not a permanent fixture.
-2. **Enterprise policy.** On managed machines, admins can pre-approve this
-   extension for screen capture, which removes the picker prompt for the listed
-   origins. The bubble itself still appears; the policy only removes the
-   permission step. Relevant policies: `ScreenCaptureAllowedByOrigins` and
-   force-install via `ExtensionInstallForcelist`.
-
-The capture window minimizes itself as soon as the encoder starts, so it does
-not sit in the middle of the recording either.
-
-## Keyboard shortcut
-
-`Ctrl+Shift+9` (`Cmd+Shift+9` on macOS) starts or stops a recording. Declared
-`"global": true`, so it also fires when no Chrome window has focus.
-
-Chrome owns the binding: `chrome.commands` can read it but not set it. The
-settings tab therefore shows the live value and links to
-`chrome://extensions/shortcuts`, which is the only place it can be changed. On
-managed machines the default can be pre-set with the `ExtensionSettings` policy.
-
-The shortcut cannot skip the share picker. Chrome requires a genuine click
-inside the capture window before it releases a stream, so starting is
-"keystroke, then one click", while stopping is fully hands-free.
-
-## v2.25.0 - Recording starts when you answer a call
-
-SORT can now start itself when a call is answered under your Sipgate name, and
-prompt when that call ends. Off until an address is entered in Settings.
-
-### Why polling and not a webhook
-A Chrome extension has no public URL, so nothing can push to it. It polls
-instead, every 2 seconds by default, and that turns out to be the better shape:
-polling is self-healing. A missed poll is invisible two seconds later; a missed
-push is a recording that never started and never recovers.
-
-The poll lives in the OFFSCREEN document, not the service worker. The worker is
-torn down after ~30s idle and `chrome.alarms` cannot fire more often than once a
-minute -- either would turn "starts when I answer" into "starts up to a minute
-later", which loses exactly the minute that explains the problem.
-
-### The rule, from the real payloads
-Verified against actual n8n executions of our hotline:
-
-| event | direction | `user` field | means |
-|---|---|---|---|
-| `newCall` | in | ARRAY of all 16 logged-in agents | the group is ringing, nobody has it |
-| `answer` | in | STRING, e.g. `"Rahel Mueller"` | this person took the call |
-| `newCall` | out | STRING | this person placed the call |
-| `hangup` | either | absent entirely | only `callId` identifies it |
-
-So one rule covers both directions: **a scalar `user` matching the configured
-name means the call is mine and live.** An array never matches. That is what
-stops an inbound hotline ring from opening a screen picker on sixteen machines
-at once.
-
-`hangup` carries no identity at all -- not even `answeringNumber`, which is the
-hotline's own number on hangup and empty on answer. So the end of a call is
-matched by `callId` against the call the session is following, never by name.
-
-### Name matching
-Matching is on the display name, folded before comparison, because the roster is
-hand-maintained and shows it: two entries in a real payload had a leading space
-(`" Valentin Resapow"`). Case, surrounding and repeated whitespace are ignored,
-and umlauts are folded BOTH ways -- `Schütz` matches `Schuetz` and `Schutz` --
-because the two conventions disagree and both are in use. Without that, one
-spelling would silently never record and look like a broken endpoint.
-
-### What happens
-* **Answered under your name** -> a recording starts, the screen picker opens.
-  No click is needed first: SORT uses `chrome.desktopCapture`, which has no
-  user-gesture requirement (unlike `getDisplayMedia`).
-* **Already recording** -> the call is attached to the running session rather
-  than starting a second one. One recording at a time, always.
-* **Call ends** -> the "still recording?" prompt appears, now saying *the call
-  ended*. Nothing stops on its own: the write-up after a call is usually the
-  part worth keeping.
-* **Someone else answers** -> nothing happens.
-* **Reload mid-call** -> the running call is adopted silently, so its hangup
-  still prompts, but no picker appears for a call answered ten minutes ago.
-
-### Settings
-`Record when I am on a call`: address, API key (sent as `X-API-Key`), and the
-interval. Empty address = off. **Test the call connection** makes the same
-request the poller makes and reports what came back -- whether the JSON parsed,
-how many calls are live, and whether any is under your name. Run it while on a
-call and it confirms the whole chain in one click.
-
-### Endpoint shapes accepted
-The endpoint is not built yet, so the reader accepts the plausible shapes rather
-than betting on one: a bare array of calls, `{calls:[...]}` (or `live`, `data`,
-`items`, `results`), or a single state object with `state: "idle"` / `"active"`.
-Per call it reads `callId`, `event`, `user`, `direction`, `from`, `to` and a
-timestamp, each with the usual aliases.
-
-### Failure behaviour
-Three consecutive failures and the poll backs off geometrically to a 60s
-ceiling, logging once rather than every two seconds. It recovers to the normal
-interval on the first success. A request that outlives its own interval is
-aborted.
-
-## v2.25.1 - Both clocks, real .sortz files, and the session is what uploads
-
-### Every timestamp shows both readings
-The elapsed/clock toggle is gone. Each row now carries the wall-clock time with
-the elapsed time under it (`14:33:05` / `+01:05.0`). The toggle made you choose
-in advance which question you were going to ask, and the answer was routinely
-the other one -- clock matches a ticket comment, a server log or a phone record,
-elapsed matches the video scrubber. Showing both costs one line per row and
-removes the decision. Sessions recorded before 2.18 have no start time and show
-elapsed alone rather than an empty line.
-
-### Exports are actually named .sortz
-`filenameFor()` always produced a `.sortz` name, but the bundle Blob was typed
-`application/zip` -- and `chrome.downloads` trusts the MIME type over the
-filename, so it silently "corrected" every export to `.zip`. The bundle is now
-typed `application/octet-stream`. It is still a plain ZIP inside; the extension
-is what tells an operator, and the import dialog, that it is a session.
-
-### The upload is the session, not the video
-The upload server now hosts the timeline player and accepts bundles (limit
-raised to 10 GB), so SORT sends the `.sortz` instead of the bare `.webm`. A
-loose video is only the pixels: no event stream, no tab lanes, no SOP steps,
-nothing saying who recorded it.
-
-* The local copy saved before uploading is also the bundle, named
-  `<ticket>_<seq>.sortz`.
-* It is built once and reused for both, because hashing several hundred
-  megabytes twice costs minutes.
-* Recordings with **no video** are no longer refused. The timeline alone is
-  worth keeping and is often the half a ticket is read for.
-* The ticket link heading is now `Session Recording`. Repeat uploads still
-  append under one heading, and tickets carrying the old `Video Recording`
-  heading keep it rather than being rewritten.
-
-### Call trigger
-Removed the open question about the `Mission Control` shared accounts in the
-hotline roster: they are a leftover and are no longer logged into the hotline,
-so no call can be answered under a name that belongs to nobody.
-
-
-## v2.26.0 - Call recording never started (two scripts, one `report`)
-
-The watcher detected the call correctly every time. Its trail ended at
-"answered -> start recording" and nothing followed -- no success line, no
-failure line, no worker activity.
-
-The cause was a name collision, not a delivery problem. `callpoll.js` and
-`offscreen.js` are both plain `<script>` tags in offscreen.html, so they share
-ONE global scope, and both defined a top-level `function report(...)`.
-offscreen.js loads last, so its export-progress reporter replaced the
-watcher's. Every call trigger was therefore posted as an `exportProgress`
-message and discarded by a worker that had no listener for it. No error was
-raised anywhere: the call succeeded, it just went to the wrong place. Both
-logging lines inside the real `report` were in the dead function, which is why
-the trail simply stopped.
-
-Fixes:
-  * The two functions are named for what they do: `reportCallState` in
-    callpoll.js, `reportExportProgress` in offscreen.js.
-  * A build check fails on any duplicated top-level name across the scripts
-    that share the offscreen document's scope.
-
-Kept from the hunt, because each is a real weakness that hid this one:
-  * Triggers are delivered over a long-lived `chrome.runtime.connect` port, so
-    the service worker cannot be torn down while a call is being watched.
-    Storage and sendMessage remain as backups; a nonce de-duplicates.
-  * Every delivery step logs, including its own exceptions, and a throw inside
-    `tick()` can no longer kill the poll loop silently.
-  * The endpoint is an append-only EVENT LOG. Rows are collapsed by callId,
-    newest row wins, and a call whose last row is `hangup` is over.
-  * `userName` may hold a ringing roster as a JSON *string*; it is unpacked so
-    a group never reads as a person.
-
-
-## v2.26.2 - Upload rejected with HTTP 400 (wrong endpoint)
-
-Saving a session locally worked, and uploading that same file by hand through
-the server's page worked. Only the extension's own upload failed, with a bare
-"HTTP 400".
-
-The extension was posting the .sortz bundle to `/api/upload` as field `file`.
-That is the old VIDEO endpoint: it accepts a bare .webm and rejects anything
-else. Session hosting added `/api/session`, which takes the bundle as field
-`bundle` and answers 201 with `session_url`. Both the path AND the field name
-were wrong, so neither alone would have been enough to spot from the status
-code.
-
-Fixes:
-  * Bundles go to `POST /api/session`, field `bundle`.
-  * A 404/405 from that endpoint (a server predating session hosting) falls
-    back to the old `/api/upload` with field `file`, so an un-upgraded server
-    keeps working with the video-only link it can produce. A 400 is NOT
-    retried: it is a real complaint about this bundle.
-  * The server's own `error` message is shown instead of the status code, so a
-    refusal says what was wrong with the file.
+# SORT — Session Observer Recorder Tracker
+
+**Version 2.30.3 · Chrome extension · Manifest V3 · Chrome 116 or later**
+
+SORT is goodBytz’s internal support-session recorder. It combines screen video with a searchable browser-activity timeline, groups recordings by support ticket, and supports local session bundles, uploads to ROUpload, and recording links on Odoo tickets.
+
+This README describes the supplied **2.30.3** package. The installed version comes from [`manifest.json`](manifest.json); release notes are maintained separately in [`UPDATE.md`](UPDATE.md).
+
+> **Recording scope:** Video contains the screen, window or tab selected in Chrome’s sharing dialog, without audio. The activity timeline can include other eligible browser tabs—not just the selected video source. Read the recording disclosure before enabling SORT.
+
+## Contents
+
+- [Requirements and installation](#requirements-and-installation)
+- [First-time setup](#first-time-setup)
+- [Recording a session](#recording-a-session)
+- [Finding recordings](#finding-recordings)
+- [Saving, uploading and linking tickets](#saving-uploading-and-linking-tickets)
+- [Reviewing and exchanging sessions](#reviewing-and-exchanging-sessions)
+- [Updates and release notes](#updates-and-release-notes)
+- [Privacy, storage and deletion](#privacy-storage-and-deletion)
+- [Troubleshooting](#troubleshooting)
+- [Maintainer reference](#maintainer-reference)
+
+## Requirements and installation
+
+- Google Chrome **116 or later**.
+- Permission to install SORT in the relevant Chrome profile.
+- Company VPN access for the recording server, as required by the recording disclosure.
+- An Odoo login and personal API key for ticket lookup and ticket-link creation.
+- A separately supplied call-state token for call-triggered recording.
+
+Odoo credentials and the call-state token are not required merely to save a session locally. A configured recorder name and accepted disclosure are required to start recording.
+
+### Normal installation
+
+Use the approved Chrome Web Store or managed deployment provided by your administrator. Pin SORT to the Chrome toolbar for quick access. Store-delivered updates are managed by Chrome.
+
+### Local testing / unpacked installation
+
+1. Extract the release ZIP into a dedicated folder.
+2. Open `chrome://extensions` and enable **Developer mode**.
+3. Choose **Load unpacked** and select the folder containing `manifest.json`.
+4. Pin SORT to the toolbar.
+
+For subsequent local builds, replace the files in the same folder and click **Reload**. Stop recordings and finish exports/uploads first. Refresh the web pages you plan to record so they receive the updated content scripts.
+
+Do not uninstall SORT or clear its extension data just to test an update: locally stored recordings and settings may be lost. Unpacked builds do not receive normal Store updates.
+
+## First-time setup
+
+Open SORT → **Settings**.
+
+| Setting | Purpose |
+|---|---|
+| **Theme** | Choose Dark or Light. Preview changes immediately; use **Save settings** to persist them. |
+| **Keyboard shortcut** | Shows Chrome’s current shortcut. **Change** opens Chrome’s extension-shortcut settings. |
+| **Folder inside Downloads** | Subfolder used for downloaded session bundles; defaults to `Recordings`. |
+| **Odoo login / API key** | Your Odoo credentials. Use **Test the Odoo connection** to check access. |
+| **Sipgate name** | Required recorder identity and the name used for call matching. Enter it as it appears in Sipgate. |
+| **Shared call-state token** | Separately provisioned credential for the fixed call-state service. Use **Test the call connection** to check it. |
+
+The upload address, Odoo address/database/model and call-state endpoint are fixed deployment values—not editable user preferences.
+
+Click **Save settings** when finished. Unsaved edits are kept as a local recovery draft after the draft write completes; they do not become live configuration until saved. **Discard unsaved changes** restores saved values. Chrome can close its toolbar popup immediately, so drafts are best-effort recovery rather than a guarantee against every interruption.
+
+### Enable SORT
+
+SORT remains off until the first-use disclosure is accepted with **Agree and enable SORT**. Acceptance is stored in the current Chrome profile. Enabling SORT does not itself start a recording.
+
+Turning SORT off stops and saves an active recording and blocks new manual and call-triggered recordings. Normal restarts and off/on changes do not require acceptance again; a revised disclosure or cleared acceptance can require a new review.
+
+Source: [`popup.html`](popup.html), [`popup.js`](popup.js), [`defaults.js`](defaults.js), [`background.js`](background.js).
+
+## Recording a session
+
+### Manual recording
+
+1. Confirm SORT is **On** and your name has been saved.
+2. Click **Start Recording**, or use the configured shortcut.
+3. In Chrome’s sharing dialog, select the screen, window or tab to capture.
+4. Carry out the support task.
+5. Stop using SORT or the shortcut. Use the ticket window to save, upload or link the session.
+
+Cancelling the sharing dialog cancels the recording start. SORT does not record microphone, system or tab audio.
+
+### Keyboard shortcut
+
+The manifest suggests **Ctrl+Shift+9**, or **Command+Shift+9** on macOS. Chrome determines the actual assignment; it may differ or be unset.
+
+Change the binding at `chrome://extensions/shortcuts`:
+
+- **In Chrome:** use the shortcut while Chrome is active.
+- **Global:** request use outside the active Chrome window as well.
+
+Saving SORT settings does not save or change Chrome’s shortcut assignment. If a shortcut behaves inconsistently, check for competing assignments or applications; a displayed key binding alone does not prove that it is working globally on that machine.
+
+### Call-triggered recording and reminders
+
+When SORT is on and configured, the call watcher checks the fixed call-state service and matches calls to the saved Sipgate name. A matching answered call can initiate the recording flow; Chrome still requires a video-source selection. Ringing alone does not start recording.
+
+Call-end handling prompts whether to stop or continue rather than blindly ending the recording. The build also includes five-minute continuation reminders, subject to its active-call and prompt-state checks.
+
+Keep the capture window open during recording and avoid reloading the extension during an active session.
+
+Source: [`capture.js`](capture.js), [`callpoll.js`](callpoll.js), [`callmatch.js`](callmatch.js), [`background.js`](background.js), [`continue.js`](continue.js).
+
+## Finding recordings
+
+The **Recordings** tab groups sessions under their ticket number, with an **Unassigned** group for sessions without a ticket. Open a group to access its session actions.
+
+### Ticket search
+
+The search field matches **ticket number and ticket title**:
+
+- Matching is case-insensitive and supports partial text.
+- Every whitespace-separated search term must match.
+- Example: `4821 fryer` requires both terms to appear in that recording’s ticket information.
+
+Dates are selected through the calendar, not parsed from this text field.
+
+### Calendar date filter
+
+Click the calendar icon at the left of the search field:
+
+1. Click a start date.
+2. Click an end date. Click the same date twice to select only that day.
+
+Either selection order works. The filter uses the recording’s **start time**, in the computer’s local time, and includes the entire first and last days. Use the month arrows to select ranges across months.
+
+Today is underlined; dots mark days with locally stored recordings. The selected range appears below the search field. Remove it using **×** or **Clear** in the calendar. Escape or an outside click closes an unfinished selection without applying it.
+
+Ticket search and the date filter work together. Matching folders open automatically while filtering. These filters do not change stored recordings.
+
+Source: [`popup.js`](popup.js), [`popup.html`](popup.html).
+
+## Saving, uploading and linking tickets
+
+The ticket window offers three workflows:
+
+| Action | Requirements | Result |
+|---|---|---|
+| **Save locally** | A stored recording; no ticket selection required | Requests a local `.sortz` download. |
+| **Save and upload session** | A selected or manually entered ticket number | Requests a local download, then uploads the session bundle. |
+| **Upload session and add link to ticket** | Valid Odoo credentials and an explicitly confirmed, loaded Odoo ticket | Requests a local download, uploads the bundle, then adds the returned link to the Odoo ticket. |
+
+For Odoo linking, select a ticket row or enter the exact number of a ticket in the loaded list. An arbitrary typed number does not authorize Odoo write-back. A ticket suggested by call metadata must still be confirmed. Reloading the ticket list clears the selection.
+
+A typical downloaded path is:
+
+```text
+Downloads/Recordings/1234/1234_001.sortz
+```
+
+The prefix comes from **Folder inside Downloads**; the suffix is a ticket sequence number. Check Chrome Downloads to confirm that the local download completed. Sessions without video can still be saved or uploaded as timeline-only bundles.
+
+The upload destination is **ROUpload**, at `http://roupload.gdbz.network`. Odoo receives a recording **link**, not a copy of the session. Keep the ticket window open until the operation finishes. If an operation fails, the session remains stored locally so it can be reopened and retried.
+
+> The current Settings help still shows a `.webm` example. The ticket save/upload implementation actually creates **`.sortz` bundles**.
+
+Source: [`ticket.js`](ticket.js), [`upload.js`](upload.js), [`odoo.js`](odoo.js).
+
+## Reviewing and exchanging sessions
+
+### Session Timeline
+
+Open a recording to review its video, when available, alongside the activity timeline. The viewer includes:
+
+- Search across actions, labels and URLs.
+- Event-type filters and a tab selector.
+- **Fold to tabs** for a compact tab-activity view.
+- **Copy log** and a technical **Debug** display.
+- Video/timeline synchronization and a resizable split view.
+
+Recognized services have readable tab names:
+
+| Host | Timeline name |
+|---|---|
+| `odoo.goodbytz.com` | Odoo GoodBytz |
+| `rka-links.gdbz.network` | RKA Webservice |
+| `rkt.gdbz.network` | Rocket Dashboard |
+| `roupload.gdbz.network` | ROUpload |
+
+Additional mappings identify supported machine tools by their port or subdomain. Rocket system-card clicks can show **Clicked RKA05-N0038**, and accessible sub-tabs use their visible labels, such as **Clicked Control**, instead of generated Radix IDs.
+
+Labels depend on the page structure and captured data. New capture rules cannot reconstruct information missing from older recordings.
+
+### Export and import
+
+Use **Export** on an eligible local recording to create a `.sortz` bundle. To review a shared session, choose **Import a session…**, select the bundle, inspect its metadata and confirm the import. Imported sessions retain provenance information; importing a duplicate can create another local copy.
+
+A `.sortz` file is a ZIP-based session container, format version **1**:
+
+```text
+manifest.json   Session metadata and format version
+session.json    Timeline, tabs and recording metadata
+session.webm    Video, when present
+```
+
+The bundle contains the video rather than merely linking to it. It is **not an encrypted archive** and may contain sensitive support information. Share it only through approved channels.
+
+Source: [`player.js`](player.js), [`content.js`](content.js), [`sortz.js`](sortz.js), [`import.js`](import.js).
+
+## Updates and release notes
+
+Chrome checks for Store updates automatically. **Settings → Updates → Check manually for updates** requests a check; SORT throttles repeated manual requests to once per five minutes.
+
+When a genuine update is pending, SORT can show update-marked toolbar icons, a notification and a popup panel with **Restart SORT now** / **Later**. Its restart checks guard against active work, relevant open SORT windows and ongoing downloads. **Later** postpones SORT’s own restart action; it does not guarantee that Chrome will never install an update automatically.
+
+After a version-changing update, the popup displays an **Updated to SORT … / What’s new** notice until opened or dismissed. A fresh install does not show that update notice. Release notes remain accessible through **Settings → Updates → What’s new**.
+
+### Maintaining `UPDATE.md`
+
+Release notes are read locally from the packaged, case-sensitive **`UPDATE.md`** file. No external news service is required. Keep newest releases first, with a heading that exactly matches the manifest version:
+
+```markdown
+# SORT update news
+
+## 2.30.3
+
+- Describe the changes included in this release.
+```
+
+The renderer supports headings `#` through `###`, unordered bullet lists, paragraphs, **bold**, inline `code`, and HTTPS links. It renders text through DOM nodes rather than executing HTML. It is a small Markdown subset, not a full Markdown engine.
+
+A matching version heading is highlighted as **Installed**. Editing packaged notes requires distributing a new build to users.
+
+> **2.30.3 release-note gap:** The supplied manifest is version **2.30.3**, but the packaged `UPDATE.md` starts at **2.30.2**. The page can still display the notes, but it cannot highlight a matching 2.30.3 section until one is added. This README does not invent missing release-specific changes.
+
+Source: [`updates.js`](updates.js), [`whatsnew.js`](whatsnew.js), [`UPDATE.md`](UPDATE.md), [`background.js`](background.js).
+
+## Privacy, storage and deletion
+
+Read the [SORT privacy notice](https://leonw-gb.github.io/) and the in-extension disclosure before use.
+
+- **Video:** selected screen/window/tab only, without audio.
+- **Timeline:** may capture interactions, entered field values, page titles, URLs, navigation, network-request details and WebSocket payloads across eligible browser tabs. Chrome-protected pages and some embedded contexts are outside ordinary content-script access.
+- **Redaction:** password-field masking is not comprehensive redaction. Avoid unrelated personal or sensitive content.
+- **Credentials and drafts:** stored in the current Chrome profile, not Chrome Sync, without additional application-level encryption. Unsaved drafts may contain credentials.
+- **Local recordings:** timeline records and video are stored locally in extension storage. Downloads are separate files.
+- **Uploads:** the server endpoint uses HTTP. The disclosure requires the company VPN; SORT does not itself enforce VPN connectivity.
+- **Deletion:** deleting a recording in SORT removes its locally stored timeline and video. It does not remove downloaded files, uploaded server copies or Odoo links.
+- **Retention policy:** the disclosure states one month from the original recording date for uploaded recordings and AI extracts, and requires manual cleanup of local recordings and exports within the same period. Server retention and Odoo-link cleanup are organizational/server processes, not proven by the extension code alone.
+
+The disclosure describes support, troubleshooting, product improvement and coaching uses, and human-reviewed, de-identified timeline extracts for authorized AI work. It explicitly excludes video from AI use. De-identification is not the same as guaranteed anonymity.
+
+### Support diagnostics
+
+Use **Settings → Support → Export support logs** to request a local diagnostic JSON download. The version and build fingerprint appear below the export button.
+
+The structured diagnostic log is bounded by **7 days**, **5 MiB**, or **5,000 entries**. It is separate from recorded session contents and uses restricted diagnostic fields. Exporting it does not automatically upload it. Review the file before sharing and use approved support channels.
+
+Source: the disclosure in [`popup.html`](popup.html), [`background.js`](background.js), [`security.js`](security.js), [`diagnostics-core.js`](diagnostics-core.js), [`diagnostics.js`](diagnostics.js).
+
+## Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| Recording will not start | SORT is on, disclosure is accepted, the Sipgate name is saved, and Chrome’s sharing dialog was not cancelled. |
+| Automatic call recording does not start | Check the saved name and token, then **Test the call connection**. Already-running calls may be adopted without reopening a capture picker. |
+| Shortcut does not respond | Review the binding and scope in Chrome’s shortcut settings; check competing shortcuts. SORT’s Save button does not configure Chrome shortcuts. |
+| Odoo-link button stays grey | Test the credentials, load tickets, then explicitly select a row or type an exact loaded ticket number. |
+| Upload fails | Check VPN/network access, the ROUpload service and the reported error. Confirm the local download separately before retrying. |
+| Recordings appear missing | Clear both the text search and date filter. Expand ticket folders and check Unassigned. Confirm you are using the original Chrome profile and extension installation. |
+| A label is still technical | Refresh the page after updating, make a new test recording, and inspect Debug output. Older sessions may lack the required captured text. |
+| Restart is unavailable | Stop recordings, finish transfers and close capture, ticket, import, player or reminder windows. Resolve unsaved settings. |
+| No update-news banner | It appears after a version-changing update, not a fresh install or once dismissed. Use Settings → Updates → What’s new. |
+
+For unresolved issues, note the version/build, reproduction steps and exact error, and export support logs. Internal contact: **Leon Weber — leon.weber@goodbytz.com**.
+
+## Maintainer reference
+
+### Main files
+
+| Files | Responsibility |
+|---|---|
+| `manifest.json`, `build-info.js` | Extension version, permissions, entry points and generated build fingerprint. |
+| `background.js`, `security.js` | Session lifecycle, persistence, message authorization and tool/disclosure state. |
+| `popup.html`, `popup.js` | Session controls, recordings, search/calendar, settings and update notices. |
+| `capture.html`, `capture.js` | Video-source flow, recording and video persistence. |
+| `content.js`, `ws-hook.js` | Browser interaction and page-world WebSocket capture. |
+| `offscreen.html`, `offscreen.js`, `callpoll.js`, `callmatch.js` | Offscreen work and call-state monitoring/matching. |
+| `continue.html`, `continue.js` | Stop/continue prompts. |
+| `ticket.html`, `ticket.js`, `odoo.js`, `upload.js` | Ticket assignment, downloads, uploads and Odoo linking. |
+| `player.html`, `player.js` | Session Timeline and video review. |
+| `sortz.js`, `import.html`, `import.js` | Session-bundle serialization and import. |
+| `updates.js`, `whatsnew.html`, `whatsnew.js`, `UPDATE.md` | Update handling and packaged release notes. |
+| `defaults.js`, `theme.js` | Deployment constants and theme helpers. |
+| `diagnostics-core.js`, `diagnostics.js`, `icons/` | Diagnostic policy/reporting and toolbar-state artwork. |
+
+### Deployment values and permissions
+
+`defaults.js` fixes the upload server, Odoo server, database `gdbytz`, model `helpdesk.ticket`, call-state endpoint and timing defaults. Do not distribute personal Odoo API keys or the shared call-state token in source files.
+
+The manifest requests `tabs`, `scripting`, `storage`, `downloads`, `desktopCapture`, `alarms`, `offscreen`, `notifications`, and `<all_urls>` host access. Its content scripts are top-frame only (`all_frames: false`); the WebSocket hook runs in the page’s main world.
+
+Uploads primarily use `POST /api/session` with multipart field `bundle`. Only HTTP 404/405 causes a fallback attempt to `/api/upload` with field `file`; legacy-server compatibility still depends on what that server accepts.
+
+### Release checklist
+
+1. Increase `manifest.json` to the intended release version.
+2. Add accurate release notes under the identical version heading in `UPDATE.md`.
+3. Review deployment constants and ensure no credentials have entered the package.
+4. Run JavaScript syntax checks and test the changed workflows in Chrome.
+5. Rebuild `build-info.js` using the maintained release builder. Its inventory must include `UPDATE.md`, `whatsnew.html` and `whatsnew.js` as well as the other runtime files.
+6. Package the complete extension with `manifest.json` at the ZIP root and preserve all icon assets.
+7. Test the install/update path, disclosure, recording, save/upload, import, search/calendar, settings and release-note links before distribution.
+
+No build script or automated test suite is included in the supplied ZIP. Use the separately maintained release tooling; an older whitelist-based builder may omit newer files. Do not modify release contents after generating their fingerprint without rebuilding it.
+
+### Notes specific to the supplied 2.30.3 package
+
+- The packaged build fingerprint was checked against its declared inventory and matches the uploaded files.
+- `UPDATE.md` has no `## 2.30.3` entry; add verified release details before the next publication.
+- The Settings download example still uses `.webm`; ticket saves actually produce `.sortz`.
+- The release-notes page calls the shared theme loader, but `whatsnew.html` is absent from the worker’s `getConfig` page allowlist. Its saved-theme lookup can therefore fall back to Dark. Do not assume that this page follows a saved Light theme without addressing that authorization mismatch.
+
+These are documentation observations, not code changes. The extension files were not modified to produce this README.
