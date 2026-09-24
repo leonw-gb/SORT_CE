@@ -1339,7 +1339,7 @@ const WORKER_MESSAGE_PAGES = {
   nextTicketSequence: ["ticket.html"], finishRecording: ["ticket.html"], downloadVideo: ["ticket.html"],
   openTicketDialog: ["popup.html"], getShortcut: ["popup.html"], getSessionStatus: ["popup.html"],
   getRecordings: ["popup.html", "ticket.html", "player.html"], deleteRecording: ["popup.html", "ticket.html"],
-  getConfig: ["popup.html", "ticket.html", "player.html", "import.html", "continue.html", "capture.html"],
+  getConfig: ["popup.html", "ticket.html", "player.html", "import.html", "continue.html", "capture.html", "whatsnew.html"],
   getSettingsDraft: ["popup.html"], saveSettingsDraft: ["popup.html"], clearSettingsDraft: ["popup.html"],
   saveConfig: ["popup.html"], clearCredentials: ["popup.html"], setTheme: ["popup.html"],
   exportRecording: ["popup.html", "player.html"], consumeNameWarning: ["popup.html"],

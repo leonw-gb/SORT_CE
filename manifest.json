@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SORT - Session Observer Recorder Tracker",
-  "version": "2.30.3",
+  "version": "2.30.4",
   "description": "Records support sessions with screen video and browser activity timelines for troubleshooting and ticket follow-up.",
   "permissions": [
     "tabs",

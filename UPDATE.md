@@ -2,7 +2,7 @@
 
 ## 2.30.4
 
-- **README:** rewrote the README file to represent the current status. Fixed some minor spelling
+- **Theme fix:** the What's new page now follows the saved Dark or Light theme.
 
 ## 2.30.3
 

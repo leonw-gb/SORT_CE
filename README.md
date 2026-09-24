@@ -155,8 +155,6 @@ The prefix comes from **Folder inside Downloads**; the suffix is a ticket sequen
 
 The upload destination is **ROUpload**, at `http://roupload.gdbz.network`. Odoo receives a recording **link**, not a copy of the session. Keep the ticket window open until the operation finishes. If an operation fails, the session remains stored locally so it can be reopened and retried.
 
-> The current Settings help still shows a `.webm` example. The ticket save/upload implementation actually creates **`.sortz` bundles**.
-
 Source: [`ticket.js`](ticket.js), [`upload.js`](upload.js), [`odoo.js`](odoo.js).
 
 ## Reviewing and exchanging sessions
@@ -223,8 +221,6 @@ Release notes are read locally from the packaged, case-sensitive **`UPDATE.md`**
 The renderer supports headings `#` through `###`, unordered bullet lists, paragraphs, **bold**, inline `code`, and HTTPS links. It renders text through DOM nodes rather than executing HTML. It is a small Markdown subset, not a full Markdown engine.
 
 A matching version heading is highlighted as **Installed**. Editing packaged notes requires distributing a new build to users.
-
-> **2.30.3 release-note gap:** The supplied manifest is version **2.30.3**, but the packaged `UPDATE.md` starts at **2.30.2**. The page can still display the notes, but it cannot highlight a matching 2.30.3 section until one is added. This README does not invent missing release-specific changes.
 
 Source: [`updates.js`](updates.js), [`whatsnew.js`](whatsnew.js), [`UPDATE.md`](UPDATE.md), [`background.js`](background.js).
 
@@ -306,12 +302,3 @@ Uploads primarily use `POST /api/session` with multipart field `bundle`. Only HT
 7. Test the install/update path, disclosure, recording, save/upload, import, search/calendar, settings and release-note links before distribution.
 
 No build script or automated test suite is included in the supplied ZIP. Use the separately maintained release tooling; an older whitelist-based builder may omit newer files. Do not modify release contents after generating their fingerprint without rebuilding it.
-
-### Notes specific to the supplied 2.30.3 package
-
-- The packaged build fingerprint was checked against its declared inventory and matches the uploaded files.
-- `UPDATE.md` has no `## 2.30.3` entry; add verified release details before the next publication.
-- The Settings download example still uses `.webm`; ticket saves actually produce `.sortz`.
-- The release-notes page calls the shared theme loader, but `whatsnew.html` is absent from the worker’s `getConfig` page allowlist. Its saved-theme lookup can therefore fall back to Dark. Do not assume that this page follows a saved Light theme without addressing that authorization mismatch.
-
-These are documentation observations, not code changes. The extension files were not modified to produce this README.
