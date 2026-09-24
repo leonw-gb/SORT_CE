@@ -6,25 +6,19 @@
   const version = () => chrome.runtime.getManifest().version;
   async function state() { return (await local.get(KEY))[KEY] || {}; }
   async function save(s) { await local.set({[KEY]: s}); }
-  // Both real and simulated notifications use the same visual options.
-  function noticeOptions(test = false, delayed = false) {
+  function noticeOptions() {
     return {type: 'basic', iconUrl: 'icons/idle128.png',
-      title: test ? 'TEST - SORT update notification' : 'SORT update ready',
-      message: test
-        ? (delayed ? 'Delayed test after Chrome/worker resumed. ' : '') +
-          'Notification test only. Click to open SORT. No update or restart will run.'
-        : 'Open SORT to restart now or choose Later. Active work will not be interrupted by the button.'};
+      title: 'SORT update ready',
+      message: 'Open SORT to restart now or choose Later. Active work will not be interrupted by the button.'};
   }
-  async function openUpdateControls(test = false) {
+  async function openUpdateControls() {
     try {
       if (typeof chrome.action.openPopup !== 'function') throw new Error('Popup API unavailable');
       await chrome.action.openPopup();
-      return 'popup';
     } catch (_) {
-      // Chrome 116-126 or no suitable browser window: user-clicked fallback.
-      await chrome.windows.create({url: chrome.runtime.getURL('popup.html') +
-        (test ? '?notificationTest=1' : ''), type: 'popup', width: 390, height: 620, focused: true});
-      return 'window';
+      // Preserve the tested user-click fallback when the toolbar popup cannot open.
+      await chrome.windows.create({url: chrome.runtime.getURL('popup.html'),
+        type: 'popup', width: 390, height: 620, focused: true});
     }
   }
   async function available(details) {
@@ -116,129 +110,15 @@
     void openUpdateControls().catch(() => {});
   });
 
-  // LOCAL TEST BUILD ONLY. Separate key, alarm and notification from real updates.
-  // No simulated pending version and no path from this module to reload/check().
-  const TEST_KEY = 'sortNotificationTest.v1';
-  const TEST_ALARM = 'sort-notification-test';
-  const TEST_NOTICE = 'sort-notification-test-notice';
-  let testQueue = Promise.resolve();
-  function testSerial(fn) {
-    const job = testQueue.then(fn);
-    testQueue = job.catch(() => {});
-    return job;
-  }
-  const testState = async () => (await local.get(TEST_KEY))[TEST_KEY] || {};
-  const saveTest = s => local.set({[TEST_KEY]: s});
-  const testError = e => String(e?.message || e || 'Unknown error').slice(0, 300);
-  async function permission() {
-    try { return await chrome.notifications.getPermissionLevel(); }
-    catch (_) { return 'unknown'; }
-  }
-  async function notificationTestStatus() {
-    return testSerial(async () => {
-      try { return {success: true, test: await testState(), permission: await permission()}; }
-      catch (e) { return {success: false, error: testError(e)}; }
-    });
-  }
-  async function scheduleNotificationTest() {
-    return testSerial(async () => {
-      try {
-        await chrome.alarms.clear(TEST_ALARM);
-        await chrome.notifications.clear(TEST_NOTICE);
-        const scheduledAt = Date.now();
-        const s = {phase: 'scheduled', indicator: true, scheduledAt, dueAt: scheduledAt + 10000};
-        await saveTest(s);
-        try { await chrome.alarms.create(TEST_ALARM, {when: s.dueAt}); }
-        catch (e) {
-          await saveTest({...s, phase: 'failed', error: 'Could not schedule alarm: ' + testError(e)});
-          throw e;
-        }
-        return {success: true, test: s, permission: await permission()};
-      } catch (e) { return {success: false, error: testError(e)}; }
-    });
-  }
-  async function clearNotificationTest() {
-    return testSerial(async () => {
-      try {
-        // Persist cancellation first; an already queued alarm must not deliver.
-        await saveTest({phase: 'cleared', indicator: false, clearedAt: Date.now()});
-        await chrome.alarms.clear(TEST_ALARM);
-        await chrome.notifications.clear(TEST_NOTICE);
-        return {success: true, test: await testState(), permission: await permission()};
-      } catch (e) { return {success: false, error: testError(e)}; }
-    });
-  }
-  async function runNotificationTest(reason) {
-    const s = await testState();
-    if (s.phase === 'sending') {
-      // Do not replay an ambiguous send if the worker died after Chrome accepted it.
-      await saveTest({...s, phase: 'interrupted', error:
-        'Worker stopped during delivery. The notification may have appeared. Schedule a new test.'});
-      return;
-    }
-    if (s.phase !== 'scheduled' || !Number.isFinite(s.dueAt)) return;
-    if (Date.now() < s.dueAt) {
-      await chrome.alarms.create(TEST_ALARM, {when: s.dueAt});
-      return;
-    }
-    // A persisted due time survives lost alarms and a fully stopped browser.
-    const delayed = reason !== 'alarm' || Date.now() > s.dueAt + 5000;
-    const attempt = {...s, phase: 'sending', attemptedAt: Date.now(), delayed,
-      permission: await permission()};
-    await saveTest(attempt);
-    await chrome.alarms.clear(TEST_ALARM);
-    if (attempt.permission === 'denied') {
-      await saveTest({...attempt, phase: 'blocked', error: 'Chrome reports notifications are disabled for SORT.'});
-      return;
-    }
-    try {
-      await chrome.notifications.create(TEST_NOTICE, noticeOptions(true, delayed));
-    } catch (e) {
-      await saveTest({...attempt, phase: 'failed', error: 'Notification request failed: ' + testError(e)});
-      return;
-    }
-    // API success means accepted by Chrome, not proven visible on the desktop.
-    await saveTest({...attempt, phase: 'requested', requestedAt: Date.now()});
-  }
-  function resumeNotificationTest(reason) {
-    return testSerial(async () => {
-      try { await runNotificationTest(reason); }
-      catch (e) { console.warn('SORT notification test:', testError(e)); }
-    });
-  }
-  chrome.alarms.onAlarm.addListener(alarm => {
-    if (alarm.name === TEST_ALARM) void resumeNotificationTest('alarm');
-  });
-  chrome.runtime.onStartup.addListener(() => { void resumeNotificationTest('startup'); });
-  chrome.notifications.onClicked.addListener(id => {
-    if (id !== TEST_NOTICE) return;
-    void testSerial(async () => {
-      try {
-        const s = await testState();
-        if (!['requested', 'sending', 'interrupted'].includes(s.phase)) return;
-        await saveTest({...s, clickedAt: Date.now()});
-        try {
-          const opened = await openUpdateControls(true);
-          await saveTest({...await testState(), opened});
-        } catch (e) {
-          await saveTest({...await testState(), openError: testError(e)});
-        }
-      } catch (e) { console.warn('SORT notification test click:', testError(e)); }
-    });
-  });
-  chrome.notifications.onClosed.addListener((id, byUser) => {
-    if (id !== TEST_NOTICE) return;
-    void testSerial(async () => {
-      const s = await testState();
-      if (['requested', 'interrupted'].includes(s.phase))
-        await saveTest({...s, closedAt: Date.now(), closedByUser: byUser});
-    }).catch(() => {});
-  });
-  // Also recover on worker wake: browser startup is not the only wake-up path.
-  void resumeNotificationTest('worker-resumed');
+  // Migration only: retire artifacts left by an unpacked simulation build.
+  // No test listeners, scheduling, synthetic pending versions or UI remain.
+  void Promise.allSettled([
+    chrome.alarms.clear('sort-notification-test'),
+    chrome.notifications.clear('sort-notification-test-notice'),
+    local.remove('sortNotificationTest.v1')
+  ]);
 
   globalThis.SortUpdates = Object.freeze({status, check, restart, defer,
-    notificationTestStatus, scheduleNotificationTest, clearNotificationTest,
     get locked() { return locked; }, cancelRestart() { locked = false; }, beginJob() { jobs++; }, endJob() { jobs = Math.max(0, jobs - 1); },
     setBusyReader(fn) { busyReader = fn; }});
 })();

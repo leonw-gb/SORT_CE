@@ -833,12 +833,11 @@ function updateBadge(recording) {
   const revision = ++toolbarRevision;
   const task = toolbarQueue.then(async () => {
     if (revision !== toolbarRevision) return;
-    const saved = await chrome.storage.local.get(['sortUpdate.v1', 'sortNotificationTest.v1']);
+    const saved = await chrome.storage.local.get('sortUpdate.v1');
     if (revision !== toolbarRevision) return;
     const pending = saved['sortUpdate.v1']?.pending;
     const realUpdate = typeof pending === 'string' && /^\d+(\.\d+){0,3}$/.test(pending) &&
       pending !== chrome.runtime.getManifest().version;
-    const testUpdate = saved['sortNotificationTest.v1']?.indicator === true;
     const recordingNow = toolEnabled && toolbarRecording;
     const paths = !toolEnabled ? ICON_INACTIVE : recordingNow ? ICON_RECORDING : ICON_IDLE;
     const label = !toolEnabled ? 'off' : recordingNow ? 'recording' : 'ready';
@@ -846,7 +845,7 @@ function updateBadge(recording) {
       : recordingNow ? ICON_UPDATE_RECORDING : ICON_UPDATE_IDLE;
     if (revision !== toolbarRevision) return;
     try {
-      await chrome.action.setIcon({path: realUpdate || testUpdate ? updatePaths : paths});
+      await chrome.action.setIcon({path: realUpdate ? updatePaths : paths});
     } catch (e) {
       console.warn('SORT toolbar icon:', String(e.message || e));
       // Keep recording state visible if a local asset is missing/cannot be read.
@@ -854,7 +853,7 @@ function updateBadge(recording) {
     }
     await chrome.action.setTitle({title: `SORT - ${label}` + (realUpdate
       ? ` - update ${pending} ready. Click to review.`
-      : testUpdate ? ' - TEST update indicator. Click SORT; clear in Settings.' : '')});
+      : '')});
     // No text badge: the update indication is part of the supplied PNG.
     await chrome.action.setBadgeText({text: ''});
   });
@@ -862,7 +861,7 @@ function updateBadge(recording) {
   return toolbarQueue;
 }
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && (changes['sortUpdate.v1'] || changes['sortNotificationTest.v1']))
+  if (area === 'local' && changes['sortUpdate.v1'])
     void updateBadge(!!activeSession);
 });
 
@@ -1312,9 +1311,7 @@ const WORKER_MESSAGE_PAGES = {
   exportRecording: ["popup.html", "player.html"], consumeNameWarning: ["popup.html"],
   openImport: ["popup.html"], importFinished: ["import.html"],
   getUpdateStatus: ["popup.html"], checkForUpdate: ["popup.html"], restartForUpdate: ["popup.html"],
-  deferUpdate: ["popup.html"],
-  getNotificationTestStatus: ["popup.html"], scheduleNotificationTest: ["popup.html"],
-  clearNotificationTest: ["popup.html"]
+  deferUpdate: ["popup.html"]
 };
 function allowWorkerMessage(message, sender) {
   if (!message || typeof message.type !== "string") return false;
@@ -1567,12 +1564,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sipgateName: c.sipgateName, upload: c.upload, odoo: c.odoo} : {theme: c.theme})).catch(() => sendResponse({success: false, error: "Settings could not be loaded."}));
       return true;
 
-    case "getNotificationTestStatus":
-      SortUpdates.notificationTestStatus().then(sendResponse); return true;
-    case "scheduleNotificationTest":
-      SortUpdates.scheduleNotificationTest().then(sendResponse); return true;
-    case "clearNotificationTest":
-      SortUpdates.clearNotificationTest().then(sendResponse); return true;
     case "getUpdateStatus":
       SortUpdates.status().then(sendResponse); return true;
     case "checkForUpdate":

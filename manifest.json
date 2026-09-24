@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "SORT - LOCAL custom-icon test",
-  "version": "2.29.9",
+  "name": "SORT - Session Observer Recorder Tracker",
+  "version": "2.29.10",
   "description": "Records support sessions with screen video and browser activity timelines for troubleshooting and ticket follow-up.",
   "permissions": [
     "tabs",
@@ -71,6 +71,5 @@
       "global": true
     }
   },
-  "minimum_chrome_version": "116",
-  "version_name": "2.29.9 - local custom-icon test"
+  "minimum_chrome_version": "116"
 }
