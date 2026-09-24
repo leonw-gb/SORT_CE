@@ -665,8 +665,22 @@ function describeRocketSystemCard(startEl) {
   return null;
 }
 
+// Radix/shadcn tabs (Rocket system page): the visible text after the icon
+// is the label; the generated id (radix-:r1d:-trigger-...) is not.
+function describeRadixTab(startEl) {
+  const tab = startEl.closest("[role='tab']");
+  if (!tab) return null;
+  const label = (tab.getAttribute("aria-label") || tab.textContent || "").replace(/\s+/g, " ").trim();
+  if (!label || label.length > 80) return null;
+  return { role: "tab", icon: null, tooltip: null, label,
+    active: tab.getAttribute("aria-selected") === "true" };
+}
+
 function describeControl(startEl) {
   if (!startEl || !startEl.closest) return null;
+
+  const radixTab = describeRadixTab(startEl);
+  if (radixTab) return radixTab;
 
   const rocket = describeRocketSystemCard(startEl);
   if (rocket) return rocket;

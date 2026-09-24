@@ -603,7 +603,7 @@ function describe(ev) {
       // often a bare <i>glyph</i> icon or a div with an auto-generated id
       // (c73, f_<uuid>) that means nothing to a reader.
       const c = d.control || null;
-      const usefulId = (d.id && !/^c\d+$/.test(d.id) && !/^f_[0-9a-f-]{16,}$/i.test(d.id)) ? d.id : null;
+      const usefulId = (d.id && !/^c\d+$/.test(d.id) && !/^f_[0-9a-f-]{16,}$/i.test(d.id) && !/^radix-/i.test(d.id)) ? d.id : null;
 
       // Plain-DOM text fields read like Flutter ones:
       //   Clicked Text Field -> Search Current Schedule
