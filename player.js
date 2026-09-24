@@ -172,8 +172,22 @@ const TAB_APP_BY_SUBDOMAIN = {
 // appended. Matched on host + a path prefix, longest prefix first.
 const TAB_APP_BY_SITE = [
   { host: "unifi.ui.com", name: "Video Dashboard" },
-  { host: "cloud.fully-kiosk.com", path: "/cloud", name: "Fully Kiosk Device Manager" }
+  { host: "cloud.fully-kiosk.com", path: "/cloud", name: "Fully Kiosk Device Manager" },
+  { host: "odoo.goodbytz.com", name: "Odoo GoodBytz" },
+  { host: "rka-links.gdbz.network", name: "RKA Webservice" },
+  { host: "roupload.gdbz.network", name: "ROUpload" }
 ];
+
+// Rocket names a single system on its overview page, otherwise the dashboard.
+//   rkt.gdbz.network/system-overview?id=RKA04-N0052 -> Rocket RKA04-N0052
+function rocketTabName(x, host) {
+  if (host !== "rkt.gdbz.network") return null;
+  if ((x.pathname || "").replace(/\/+$/, "") === "/system-overview") {
+    const id = (x.searchParams.get("id") || "").trim();
+    if (/^[A-Za-z0-9][A-Za-z0-9-]{0,39}$/.test(id)) return `Rocket ${id.toUpperCase()}`;
+  }
+  return "Rocket Dashboard";
+}
 
 // Machine id: "rka04-n0036" from the hostname, or from the first path segment
 // (the Scheduler Dashboard puts it there too), upper-cased for display.
@@ -193,6 +207,9 @@ function tabNameFromUrl(url) {
   let x;
   try { x = new URL(url); } catch (e) { return null; }
   const host = (x.hostname || "").toLowerCase();
+  if (!["http:", "https:"].includes(x.protocol)) return null;
+  const rocket = rocketTabName(x, host);
+  if (rocket) return rocket;
 
   // Fleet-wide tools first: they are named by address alone, and appending a
   // machine id to them would be a lie.
