@@ -870,7 +870,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 // A popup gets no messages while it is closed, and Chrome may also drop one if
 // the worker was asleep. Re-read whenever the window regains focus, and poll
 // gently while a ticket window is plausibly open.
-window.addEventListener("focus", () => { loadRecordings(); refreshStatus(); });
+window.addEventListener("focus", () => { loadRecordings(); refreshStatus(); loadShortcut(); });
 setInterval(() => { if (!document.hidden) { loadRecordings(); refreshStatus(); } }, 3000);
 
 // ---- Init -------------------------------------------------------------------

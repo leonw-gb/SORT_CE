@@ -318,7 +318,8 @@
       color: var(--ink); border-radius: 4px; cursor: pointer; transition: all .15s;
     }
     .recording-actions button:hover { background: var(--hover); border-color: var(--accent); color: var(--accent); }
-    .recording-actions button.danger:hover { background: var(--hover); border-color: var(--accent-hi); color: var(--accent-hi); }
+    .recording-actions button.danger { color: #ff0000; }
+    .recording-actions button.danger:hover { background: var(--hover); border-color: #ff0000; color: #ff0000; }
 
     .empty-state { text-align: center; padding: 24px; color: var(--ink-faint); font-size: 12px; }
 
@@ -422,7 +423,7 @@
           <kbd id="shortcutValue">not set</kbd>
           <button class="btn btn-secondary shortcut-edit" id="editShortcut">Change</button>
         </div>
-        <div class="help-text">Change opens Chrome&rsquo;s shortcut settings.</div>
+        <div class="help-text">Change opens Chrome&rsquo;s shortcut settings. There, "Global" means shortcut works even though Chrome tab is not in front.</div>
       </div>
     </fieldset>
 
@@ -431,9 +432,8 @@
       <div class="setting">
         <label for="downloadFolder">Folder inside Downloads</label>
         <input type="text" id="downloadFolder" placeholder="Recordings">
-        <div class="help-text">Grouped by ticket, e.g. Recordings/1234/1234_001.webm.</div>
+        <div class="help-text">Grouped by ticket, e.g. Recordings/1234/1234_001.webm if folder is named "Recordings".</div>
       </div>
-      <div class="help-text">Recording reminder every 5 minutes.</div>
     </fieldset>
 
     <fieldset>
@@ -471,15 +471,14 @@
       <div class="fixed-row"><span>Call-state endpoint</span><code id="callStateEndpoint"></code></div>
       <div class="setting"><label for="callStateToken">Shared call-state token</label>
         <input type="password" id="callStateToken" autocomplete="off" spellcheck="false"></div>
-      <div class="help-text">Starts recording when you answer a call.</div>
       <button class="btn btn-secondary" id="testCall">Test the call connection</button>
       <div class="help-text" id="callStatus" role="status"></div>
     </fieldset>
 
     <fieldset>
       <legend>Updates</legend>
-      <button class="btn btn-secondary" id="checkUpdate">Check for updates</button>
-      <div id="updateCheckStatus" class="help-text" role="status">Chrome also checks automatically (Store installs).</div>
+      <button class="btn btn-secondary" id="checkUpdate">Check manually for updates</button>
+      <div id="updateCheckStatus" class="help-text" role="status">Chrome also checks automatically.</div>
     </fieldset>
     <fieldset>
       <legend>Support</legend>

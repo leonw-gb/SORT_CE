@@ -75,7 +75,7 @@
   .btn.primary:not(:disabled) { background:var(--accent); border-color:var(--accent); color:#fff; }
   .selection-status { padding:8px 16px; color:var(--muted); font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
   #callTicketSuggestion[hidden] { display:none; }
-  .btn.danger { color:var(--err); }
+  .btn.danger, .btn.danger:not(:disabled):hover { color:#ff0000; }
   .btn:focus-visible, tbody tr:focus-visible { outline:2px solid var(--link); outline-offset:1px; }
   .spacer { flex:1; }
 
@@ -107,7 +107,7 @@
   <div id="odooSelectionStatus" class="selection-status" role="status">No Odoo ticket selected.</div>
 
   <footer>
-    <button class="btn" id="saveLocal">Save locally</button>
+    <button class="btn primary" id="saveLocal">Save locally</button>
     <button class="btn primary" id="saveUpload">Save and upload session</button>
     <button class="btn primary" id="saveUploadOdoo" disabled aria-disabled="true" aria-describedby="odooSelectionStatus">Upload session and add link to ticket</button>
     <span class="spacer"></span>
