@@ -287,6 +287,15 @@
     }
     .btn-import:hover { border-color: var(--accent); color: var(--accent); }
     .btn-import:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+    .whats-new { display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 16px;
+      background: var(--tag-bg); color: var(--tag-ink); font-size: 12px; border-bottom: 1px solid var(--edge); }
+    .whats-new[hidden] { display: none; }
+    .whats-new span { flex: 1; min-width: 0; }
+    .whats-new-link { border: none; background: transparent; color: var(--link); font: inherit; font-weight: 700;
+      text-decoration: underline; text-underline-offset: 2px; cursor: pointer; padding: 2px; }
+    .whats-new-close { border: none; background: transparent; color: inherit; font-size: 16px; line-height: 1;
+      width: 22px; height: 22px; border-radius: 50%; cursor: pointer; }
+    .whats-new button:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
     .recording-search { position: relative; margin-bottom: 10px; }
     .recording-search input { padding-left: 36px !important; }
     .date-filter-button {
@@ -434,6 +443,11 @@
     <button class="btn btn-secondary" id="deferUpdate">Later</button>
     <p class="help-text">Later prevents SORT from restarting itself now. Chrome may still apply updates automatically when idle or after a browser restart.</p>
   </section>
+  <div id="whatsNewBanner" class="whats-new" role="status" hidden>
+    <span id="whatsNewText"></span>
+    <button type="button" class="whats-new-link" id="whatsNewOpen">What's new</button>
+    <button type="button" class="whats-new-close" id="whatsNewDismiss" aria-label="Dismiss update notice">&times;</button>
+  </div>
   <div class="tab-buttons">
     <button class="tab-button active" data-tab="recordings">Recordings</button>
     <button class="tab-button" data-tab="settings">Settings</button>
@@ -547,6 +561,7 @@
     <fieldset>
       <legend>Updates</legend>
       <button class="btn btn-secondary" id="checkUpdate">Check manually for updates</button>
+      <button class="btn btn-secondary" id="openWhatsNew" type="button">What's new</button>
       <div id="updateCheckStatus" class="help-text" role="status">Chrome also checks automatically.</div>
     </fieldset>
     <fieldset>

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SORT – What's new</title>
+  <style>
+    :root, [data-theme="dark"] { --page:#12161c; --surface:#181d25; --edge:#2a323f; --ink:#e8eaed;
+      --ink-strong:#fff; --ink-soft:#9aa4b2; --accent:#E21A82; --link:#7dd3fc; --code:#1f2530; }
+    [data-theme="light"] { --page:#f8f9fa; --surface:#fff; --edge:#e5e5e5; --ink:#333;
+      --ink-strong:#1a1a1a; --ink-soft:#777; --accent:#E21A82; --link:#2b6cb0; --code:#f1f3f5; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--page); color:var(--ink);
+      font:14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    main { max-width:720px; margin:32px auto; padding:24px 32px; background:var(--surface);
+      border:1px solid var(--edge); border-radius:8px; }
+    h1 { font-size:22px; color:var(--ink-strong); margin:0 0 8px; }
+    h2 { font-size:17px; color:var(--ink-strong); margin:28px 0 8px; padding-top:18px; border-top:1px solid var(--edge); }
+    h2.current { color:var(--accent); }
+    h2 .badge { margin-left:8px; font-size:11px; padding:2px 7px; border-radius:10px; background:var(--accent); color:#fff; vertical-align:middle; }
+    h3 { font-size:14px; color:var(--ink-strong); margin:16px 0 4px; }
+    ul { padding-left:20px; } li + li { margin-top:4px; }
+    code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:12px; }
+    a { color:var(--link); }
+    .meta { color:var(--ink-soft); font-size:12px; }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="meta" id="installed"></p>
+    <article id="notes" aria-live="polite">Loading release notes...</article>
+  </main>
+  <script src="theme.js"></script>
+  <script src="whatsnew.js"></script>
+</body>
+</html>

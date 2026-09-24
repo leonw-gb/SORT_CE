@@ -1010,6 +1010,24 @@ chrome.runtime.sendMessage({ type: "consumeNameWarning" }, (res) => {
 });
 
 // No dependency on settings validation: support export works before setup.
+// ---- What's new --------------------------------------------------------------
+function openWhatsNew() {
+  chrome.storage.local.remove("sortWhatsNew").catch(() => {});
+  chrome.tabs.create({ url: chrome.runtime.getURL("whatsnew.html") });
+  window.close();
+}
+chrome.storage.local.get("sortWhatsNew").then(({ sortWhatsNew }) => {
+  if (sortWhatsNew !== chrome.runtime.getManifest().version) return;
+  document.getElementById("whatsNewText").textContent = `Updated to SORT ${sortWhatsNew}.`;
+  document.getElementById("whatsNewBanner").hidden = false;
+}).catch(() => {});
+document.getElementById("whatsNewOpen").addEventListener("click", openWhatsNew);
+document.getElementById("openWhatsNew").addEventListener("click", openWhatsNew);
+document.getElementById("whatsNewDismiss").addEventListener("click", () => {
+  chrome.storage.local.remove("sortWhatsNew").catch(() => {});
+  document.getElementById("whatsNewBanner").hidden = true;
+});
+
 document.getElementById("supportBuild").textContent = `SORT ${chrome.runtime.getManifest().version} / build ${SORT_BUILD_INFO.packageBuild.slice(0, 12)}`;
 document.getElementById("exportSupportLogs").addEventListener("click", async () => {
   const button = document.getElementById("exportSupportLogs");

@@ -896,6 +896,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // wakes: without this the toolbar can sit on the red dot after a crash.
 chrome.runtime.onStartup.addListener(() => updateBadge(false));
 chrome.runtime.onInstalled.addListener(() => updateBadge(false));
+// Offer the release notes once after a real update (not a fresh install).
+chrome.runtime.onInstalled.addListener((details) => {
+  if (details.reason === "update" && details.previousVersion !== chrome.runtime.getManifest().version) {
+    chrome.storage.local.set({ sortWhatsNew: chrome.runtime.getManifest().version }).catch(() => {});
+  }
+});
 
 // ---- Keyboard shortcut -------------------------------------------------------
 // Declared in the manifest as "toggle-recording". Chrome owns the key binding:
