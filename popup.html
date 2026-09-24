@@ -402,7 +402,6 @@
       <p id="settingsDraftStatus" role="status" aria-live="polite"></p>
       <button id="discardSettings" class="btn btn-secondary" type="button">Discard unsaved changes</button>
     </div>
-    <p class="help-text" style="margin-bottom:12px">Unsaved edits are kept as a local recovery draft, not applied until Save. Drafts may contain credentials and have no additional encryption. Chrome can close this popup when you click elsewhere.</p>
 
     <fieldset>
       <legend>Appearance</legend>
@@ -423,8 +422,7 @@
           <kbd id="shortcutValue">not set</kbd>
           <button class="btn btn-secondary shortcut-edit" id="editShortcut">Change</button>
         </div>
-        <div class="help-text">Chrome owns keyboard shortcuts, so Change opens
-          Chrome&rsquo;s shortcuts page. Works even when no browser window has focus.</div>
+        <div class="help-text">Change opens Chrome&rsquo;s shortcut settings.</div>
       </div>
     </fieldset>
 
@@ -433,9 +431,9 @@
       <div class="setting">
         <label for="downloadFolder">Folder inside Downloads</label>
         <input type="text" id="downloadFolder" placeholder="Recordings">
-        <div class="help-text">Each video lands in a subfolder named after its ticket, for example Recordings/1234/1234_001.webm.</div>
+        <div class="help-text">Grouped by ticket, e.g. Recordings/1234/1234_001.webm.</div>
       </div>
-      <div class="help-text">While recording you are asked every 5 minutes whether to keep going.</div>
+      <div class="help-text">Recording reminder every 5 minutes.</div>
     </fieldset>
 
     <fieldset>
@@ -455,7 +453,6 @@
       <div class="setting">
         <label for="odooKey">API key</label>
         <input type="password" id="odooKey" placeholder="" autocomplete="off" spellcheck="false">
-        <div class="help-text">Personal key from your Odoo profile. Saved in this Chrome profile and sent to Odoo over HTTPS to authenticate requests.</div>
       </div>
       <button class="btn btn-secondary" id="testOdoo">Test the Odoo connection</button>
     </fieldset>
@@ -464,41 +461,30 @@
       <legend>Identity</legend>
       <div class="setting">
         <label for="sipgateName">Sipgate name<span class="req" aria-hidden="true">*</span></label>
-        <input type="text" id="sipgateName" placeholder="Your name" required aria-describedby="sipgateHelp">
+        <input type="text" id="sipgateName" placeholder="Your name" required>
         <div class="field-error" id="sipgateError" role="alert"></div>
-        <div class="help-text" id="sipgateHelp">Required. Identifies your recordings when you
-          share them, and matches your own calls. Type it exactly as Sipgate shows it.</div>
       </div>
     </fieldset>
 
     <fieldset>
       <legend>Record when I am on a call</legend>
-      <div class="setting"><label for="callStateUrl">Call-state endpoint</label>
-        <input type="text" id="callStateUrl" spellcheck="false" autocomplete="off">
-        <div class="help-text">Use the endpoint supplied by Leon. This test package has no endpoint preconfigured.</div></div>
+      <div class="fixed-row"><span>Call-state endpoint</span><code id="callStateEndpoint"></code></div>
       <div class="setting"><label for="callStateToken">Shared call-state token</label>
-        <input type="password" id="callStateToken" autocomplete="off" spellcheck="false">
-        <div class="help-text">Leon provides this separately. Enter it once and keep it out of screenshots and support messages.</div></div>
-      <div class="help-text">SORT checks the call system every couple of seconds and starts
-        recording when a call is answered under the name above.</div>
+        <input type="password" id="callStateToken" autocomplete="off" spellcheck="false"></div>
+      <div class="help-text">Starts recording when you answer a call.</div>
       <button class="btn btn-secondary" id="testCall">Test the call connection</button>
       <div class="help-text" id="callStatus" role="status"></div>
     </fieldset>
 
     <fieldset>
-      <legend>Credentials and updates</legend>
-      <div class="help-text">Tokens are saved in this Chrome profile, not Chrome Sync. They are not protected by application-level encryption. Removing them disables authenticated access until you enter them again.</div>
-      <button class="btn btn-secondary" id="clearCredentials">Remove saved tokens</button>
+      <legend>Updates</legend>
       <button class="btn btn-secondary" id="checkUpdate">Check for updates</button>
-      <div id="updateCheckStatus" class="help-text" role="status">Chrome also checks automatically. Store-managed installations only.</div>
+      <div id="updateCheckStatus" class="help-text" role="status">Chrome also checks automatically (Store installs).</div>
     </fieldset>
     <fieldset>
       <legend>Support</legend>
-      <div class="help-text">Diagnostic logs stay on this computer: up to 7 days, 5 MiB of log data or 5,000 entries, whichever limit is reached first. They do not include recording contents, typed values or credentials.</div>
       <button class="btn btn-secondary" id="exportSupportLogs" type="button">Export support logs</button>
       <div class="help-text" id="supportBuild"></div>
-      <div class="help-text" id="supportStatus" role="status" aria-live="polite"></div>
-      <div class="help-text">Creates a local JSON file with release/build fingerprints and diagnostic events. Nothing is uploaded automatically.</div>
     </fieldset>
 
     <fieldset>

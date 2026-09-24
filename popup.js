@@ -413,13 +413,13 @@ function currentConfig() {
   return withFixedSettings({
     downloadFolder: val("downloadFolder") || "Recordings",
     sipgateName: val("sipgateName"),
-    callTrigger: {url: val("callStateUrl"), apiKey: val("callStateToken")},
+    callTrigger: {url: FIXED.callTrigger.url, apiKey: val("callStateToken")},
     theme: currentTheme,
     odoo: { username: val("odooUser"), apiKey: val("odooKey") }
   });
 }
 
-const SETTINGS_INPUTS = ["downloadFolder", "sipgateName", "odooUser", "odooKey", "callStateUrl", "callStateToken"];
+const SETTINGS_INPUTS = ["downloadFolder", "sipgateName", "odooUser", "odooKey", "callStateToken"];
 let settingsBaseline = null;
 let settingsSaving = false;
 let draftRevision = 0;
@@ -430,11 +430,11 @@ function valuesFromConfig(config) {
   const c = withFixedSettings(config);
   return {downloadFolder: c.downloadFolder || "Recordings", sipgateName: c.sipgateName || "",
     odooUser: c.odoo?.username || "", odooKey: c.odoo?.apiKey || "",
-    callStateUrl: c.callTrigger?.url || "", callStateToken: c.callTrigger?.apiKey || "", theme: c.theme || "dark"};
+    callStateToken: c.callTrigger?.apiKey || "", theme: c.theme || "dark"};
 }
 function fillSettings(values) {
   for (const id of SETTINGS_INPUTS) document.getElementById(id).value = values[id] || "";
-  document.getElementById("callStateUrl").readOnly = !!FIXED.callTrigger.url;
+  document.getElementById("callStateEndpoint").textContent = FIXED.callTrigger.url;
   markTheme(values.theme);
 }
 function draftFields() {
@@ -445,7 +445,7 @@ function settingsDirty() { return settingsLoaded && Object.keys(draftFields()).l
 function setSettingsLocked(locked) {
   for (const id of SETTINGS_INPUTS) document.getElementById(id).disabled = locked;
   document.querySelectorAll("[data-theme-choice]").forEach(b => { b.disabled = locked; });
-  for (const id of ["saveConfig", "discardSettings", "clearCredentials", "unsavedSave", "unsavedDiscard", "unsavedKeep"])
+  for (const id of ["saveConfig", "discardSettings", "unsavedSave", "unsavedDiscard", "unsavedKeep"])
     document.getElementById(id).disabled = locked;
 }
 function showDraftStatus(message) {
@@ -458,20 +458,20 @@ function trackSettingsChange() {
   if (!settingsLoaded || settingsSaving) return;
   const revision = ++draftRevision;
   const fields = draftFields();
-  showDraftStatus(Object.keys(fields).length ? "Unsaved changes. Saving a local recovery draft..." : "");
+  showDraftStatus(Object.keys(fields).length ? "Unsaved changes. Saving draft..." : "");
   // Send on every input, not on popup unload: Chrome can destroy a popup instantly.
   chrome.runtime.sendMessage({type: "saveSettingsDraft", fields}).then(result => {
     if (revision !== draftRevision || settingsSaving) return;
     if (!result?.success) throw new Error(result?.error || "Draft was not saved.");
-    showDraftStatus(settingsDirty() ? "Unsaved changes — recovery draft saved locally. Save settings to apply them." : "");
+    showDraftStatus(settingsDirty() ? "Draft saved. Save settings to apply changes." : "");
   }).catch(e => {
     if (revision === draftRevision && !settingsSaving) showDraftStatus(String(e.message || e));
   });
 }
 async function saveSettings() {
   if (!settingsLoaded || settingsSaving) return false;
-  const endpoint = val("callStateUrl");
-  if (endpoint && !validCallEndpoint(endpoint)) { showDraftStatus("Enter an HTTP or HTTPS endpoint without embedded credentials."); return false; }
+  const endpoint = FIXED.callTrigger.url;
+  if (endpoint && !validCallEndpoint(endpoint)) { showDraftStatus("The fixed call-state endpoint is invalid. Contact support."); return false; }
   if (!val("sipgateName")) {
     showDraftStatus("Enter your name before saving.");
     flagNameField("Enter your name before saving. Recordings are shared under it.");
@@ -824,12 +824,11 @@ async function loadConfig() {
       for (const key of [...SETTINGS_INPUTS, "theme"]) {
         if (typeof draft.fields[key] === "string") restored[key] = draft.fields[key];
       }
-      if (FIXED.callTrigger.url) restored.callStateUrl = settingsBaseline.callStateUrl;
       fillSettings(restored);
     }
     settingsLoaded = true; setSettingsLocked(false);
     if (settingsDirty()) {
-      showSettingsTab(); showDraftStatus("Recovered unsaved changes. Save to apply them or discard the draft.");
+      showSettingsTab(); showDraftStatus("Draft restored. Save or discard changes.");
     } else showDraftStatus("");
   } catch (e) {
     settingsLoaded = false; showSettingsTab(); showDraftStatus(String(e.message || e));
@@ -852,6 +851,8 @@ function showToast(msg, ms) {
   document.querySelectorAll(".toast").forEach(t => t.remove());
   const t = document.createElement("div");
   t.className = "toast";
+  t.setAttribute("role", "status");
+  t.setAttribute("aria-live", "polite");
   t.textContent = msg;
   document.body.appendChild(t);
   setTimeout(() => t.remove(), ms || 2000);
@@ -896,38 +897,25 @@ chrome.runtime.sendMessage({ type: "consumeNameWarning" }, (res) => {
 // No dependency on settings validation: support export works before setup.
 document.getElementById("supportBuild").textContent = `SORT ${chrome.runtime.getManifest().version} / build ${SORT_BUILD_INFO.packageBuild.slice(0, 12)}`;
 document.getElementById("exportSupportLogs").addEventListener("click", async () => {
-  const button = document.getElementById("exportSupportLogs"), status = document.getElementById("supportStatus");
+  const button = document.getElementById("exportSupportLogs");
+  if (button.disabled) return;
   button.disabled = true;
-  status.textContent = "Preparing support logs. The download will continue if you close this popup.";
+  button.textContent = "Preparing logs...";
   try {
     const result = await chrome.runtime.sendMessage({target: "diagnostics", type: "export"});
     if (!result || !result.success) throw new Error("Support export failed");
-    status.textContent = "Download requested. Check Chrome Downloads for the support JSON file before sharing it.";
+    showToast("Download requested. Check Chrome Downloads.", 5000);
   } catch (_) {
-    status.textContent = "Could not export support logs. Retry; if this continues, check SORT's errors in chrome://extensions.";
-  } finally { button.disabled = false; }
+    showToast("Could not export support logs. Please retry.", 6000);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Export support logs";
+  }
 });
 
 function validCallEndpoint(value) {
   try { const u = new URL(value); return ["http:", "https:"].includes(u.protocol) && !u.username && !u.password; } catch (_) { return false; }
 }
-document.getElementById("clearCredentials").addEventListener("click", async () => {
-  if (!settingsLoaded || settingsSaving) return;
-  if (!confirm("Remove saved and draft Odoo API keys and call-state tokens from this Chrome profile?")) return;
-  settingsSaving = true; ++draftRevision; setSettingsLocked(true);
-  let cleared = false;
-  try {
-    const res = await chrome.runtime.sendMessage({type: "clearCredentials"});
-    if (!res?.success) throw new Error(res?.error || "Tokens could not be removed.");
-    for (const id of ["odooKey", "callStateToken"]) {
-      document.getElementById(id).value = ""; settingsBaseline[id] = "";
-    }
-    cleared = true;
-    showToast("Saved and draft tokens removed.", 5000);
-  } catch (e) { showDraftStatus(String(e.message || e)); }
-  finally { settingsSaving = false; setSettingsLocked(false); }
-  if (cleared) trackSettingsChange();
-});
 let updateBusy = false;
 async function refreshUpdatePanel() {
   if (updateBusy) return;

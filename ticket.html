@@ -67,13 +67,12 @@
   }
   .btn:not(:disabled):hover { color:var(--txt); border-color:var(--dim); }
   .btn:disabled { opacity:.55; cursor:not-allowed; }
-  .btn.primary:disabled { background:var(--panel2); border-color:var(--line2); color:var(--muted); }
+  .btn.primary:disabled { background:var(--panel2); border-color:var(--line2); color:var(--muted); opacity:1; cursor:not-allowed; box-shadow:none; }
   dialog { margin:auto; max-width:420px; width:calc(100% - 32px); padding:20px; background:var(--panel); color:var(--txt); border:1px solid var(--line2); border-radius:8px; }
   dialog::backdrop { background:#0009; }
   dialog p { margin:12px 0; line-height:1.5; }
   .dialog-actions { display:flex; gap:10px; justify-content:flex-end; }
   .btn.primary:not(:disabled) { background:var(--accent); border-color:var(--accent); color:#fff; }
-  #saveUploadOdoo:disabled { background:var(--panel2); border-color:var(--line2); color:var(--muted); opacity:1; cursor:not-allowed; box-shadow:none; }
   .selection-status { padding:8px 16px; color:var(--muted); font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
   #callTicketSuggestion[hidden] { display:none; }
   .btn.danger { color:var(--err); }
