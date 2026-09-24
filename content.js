@@ -651,8 +651,25 @@ function scheduleSemanticsTree(recordingId, reason) {
   semTreeTimer = setTimeout(() => emitSemanticsTree(recordingId, reason), 800);
 }
 
+// Rocket Dashboard system cards: the badge holds the system id. Nested
+// controls (favorite star, Odoo link) keep their own labels.
+function describeRocketSystemCard(startEl) {
+  if (location.hostname.toLowerCase() !== "rkt.gdbz.network") return null;
+  if (startEl.closest("button, a, input, select, textarea")) return null;
+  const card = startEl.closest("div.group.cursor-pointer");
+  if (!card) return null;
+  for (const span of card.querySelectorAll("span.font-mono")) {
+    const id = (span.textContent || "").trim();
+    if (/^RKA\d+-N\d+$/i.test(id)) return { role: "button", icon: null, tooltip: null, label: id.toUpperCase() };
+  }
+  return null;
+}
+
 function describeControl(startEl) {
   if (!startEl || !startEl.closest) return null;
+
+  const rocket = describeRocketSystemCard(startEl);
+  if (rocket) return rocket;
 
   // Flutter semantics node? (flt-semantics* elements carry role + aria-label)
   const flt = describeFlutterControl(startEl);
