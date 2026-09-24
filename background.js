@@ -815,39 +815,19 @@ const ICON_RECORDING = {
 let toolbarQueue = Promise.resolve();
 let toolbarRevision = 0;
 let toolbarRecording = false;
-const updateIconCache = new Map();
-async function updateIconData(paths) {
-  const key = paths[16];
-  if (!updateIconCache.has(key)) {
-    const drawing = (async () => {
-      const images = {};
-      for (const size of [16, 32, 48, 128]) {
-        const response = await fetch(chrome.runtime.getURL(paths[size]));
-        if (!response.ok) throw new Error('Toolbar icon could not be read');
-        const bitmap = await createImageBitmap(await response.blob());
-        const canvas = new OffscreenCanvas(size, size);
-        const ctx = canvas.getContext('2d');
-        if (!ctx) throw new Error('Toolbar canvas unavailable');
-        ctx.drawImage(bitmap, 0, 0, size, size);
-        bitmap.close();
-        // Lower-right marker leaves the existing upper-right state dot intact.
-        ctx.save(); ctx.scale(size / 128, size / 128);
-        ctx.fillStyle = '#FFBF32'; ctx.strokeStyle = '#20242C'; ctx.lineWidth = 6;
-        ctx.beginPath(); ctx.roundRect(68, 68, 57, 57, 10); ctx.fill(); ctx.stroke();
-        // Filled upward arrow: use shape, not a font glyph, for tiny sizes.
-        ctx.fillStyle = '#20242C'; ctx.beginPath();
-        ctx.moveTo(96.5, 78); ctx.lineTo(115, 97); ctx.lineTo(103, 97);
-        ctx.lineTo(103, 115); ctx.lineTo(90, 115); ctx.lineTo(90, 97);
-        ctx.lineTo(78, 97); ctx.closePath(); ctx.fill(); ctx.restore();
-        images[size] = ctx.getImageData(0, 0, size, size);
-      }
-      return images;
-    })();
-    updateIconCache.set(key, drawing);
-    drawing.catch(() => updateIconCache.delete(key));
-  }
-  return updateIconCache.get(key);
-}
+// User-supplied PNGs, not a generated overlay. Keep all three recording states.
+const ICON_UPDATE_IDLE = {
+  16: "icons/update_idle16.png", 32: "icons/update_idle32.png",
+  48: "icons/update_idle48.png", 128: "icons/update_idle128.png"
+};
+const ICON_UPDATE_INACTIVE = {
+  16: "icons/update_inactive16.png", 32: "icons/update_inactive32.png",
+  48: "icons/update_inactive48.png", 128: "icons/update_inactive128.png"
+};
+const ICON_UPDATE_RECORDING = {
+  16: "icons/update_recording16.png", 32: "icons/update_recording32.png",
+  48: "icons/update_recording48.png", 128: "icons/update_recording128.png"
+};
 function updateBadge(recording) {
   toolbarRecording = !!recording;
   const revision = ++toolbarRevision;
@@ -862,17 +842,20 @@ function updateBadge(recording) {
     const recordingNow = toolEnabled && toolbarRecording;
     const paths = !toolEnabled ? ICON_INACTIVE : recordingNow ? ICON_RECORDING : ICON_IDLE;
     const label = !toolEnabled ? 'off' : recordingNow ? 'recording' : 'ready';
-    let imageData = null;
-    if (realUpdate || testUpdate) {
-      try { imageData = await updateIconData(paths); }
-      catch (e) { console.warn('SORT update icon:', String(e.message || e)); }
-    }
+    const updatePaths = !toolEnabled ? ICON_UPDATE_INACTIVE
+      : recordingNow ? ICON_UPDATE_RECORDING : ICON_UPDATE_IDLE;
     if (revision !== toolbarRevision) return;
-    await chrome.action.setIcon(imageData ? {imageData} : {path: paths});
+    try {
+      await chrome.action.setIcon({path: realUpdate || testUpdate ? updatePaths : paths});
+    } catch (e) {
+      console.warn('SORT toolbar icon:', String(e.message || e));
+      // Keep recording state visible if a local asset is missing/cannot be read.
+      await chrome.action.setIcon({path: paths});
+    }
     await chrome.action.setTitle({title: `SORT - ${label}` + (realUpdate
       ? ` - update ${pending} ready. Click to review.`
       : testUpdate ? ' - TEST update indicator. Click SORT; clear in Settings.' : '')});
-    // No text badge: the arrow is part of the icon, not an UPD/OFF badge.
+    // No text badge: the update indication is part of the supplied PNG.
     await chrome.action.setBadgeText({text: ''});
   });
   toolbarQueue = task.catch(e => console.warn('SORT toolbar:', String(e.message || e)));
