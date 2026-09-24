@@ -33,7 +33,7 @@ function setProgress(loaded, total) {
 }
 function mb(n) { return (n / (1024 * 1024)).toFixed(0); }
 function esc(s) {
-  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 // ---- data --------------------------------------------------------------------
@@ -55,11 +55,15 @@ function loadVideoBlob(id) {
 }
 
 function ask(msg) {
-  return new Promise((resolve) => chrome.runtime.sendMessage(msg, resolve));
+  return new Promise((resolve, reject) => chrome.runtime.sendMessage(msg, response => {
+    if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+    else resolve(response);
+  }));
 }
 
 // ---- ticket list -------------------------------------------------------------
 function render() {
+  updateActions();
   const q = $("q").value.trim().toLowerCase();
   const rows = tickets.filter((t) => !q ||
     [t.ref, t.name, t.system, t.agent, t.stage].join(" ").toLowerCase().includes(q));
@@ -94,6 +98,7 @@ function render() {
 }
 
 function choose(id) {
+  if (busy) return;
   selected = tickets.find((t) => t.id === id) || null;
   if (selected) $("manual").value = selected.ref;
   render();
@@ -117,6 +122,7 @@ async function loadTickets() {
     tickets = [];
     setStatus(`Odoo: ${e.message}`, "err");
   }
+  if (selected) selected = tickets.find(t => t.id === selected.id && String(t.ref) === $("manual").value.trim()) || null;
   render();
 }
 
@@ -127,12 +133,18 @@ function ticketRef() {
   return selected ? selected.ref : "";
 }
 
-function setBusy(on) {
-  busy = on;
-  ["saveLocal", "saveUpload", "saveUploadOdoo", "discard", "reload"].forEach((id) => {
-    $(id).disabled = on;
-  });
+function updateActions() {
+  const validTicket = !!selected && Number.isInteger(selected.id) && selected.id > 0 &&
+    String(selected.ref) === $("manual").value.trim();
+  $("saveLocal").disabled = busy || !recording;
+  $("saveUpload").disabled = busy || !recording || !ticketRef();
+  $("saveUploadOdoo").disabled = busy || !recording || !validTicket;
+  $("saveUploadOdoo").title = validTicket ? "Upload this session and add its link to the selected Odoo ticket"
+    : "Select an Odoo ticket from the list. A matching loaded ticket number also works.";
+  $("discard").disabled = busy || !recording;
+  for (const id of ["reload", "manual", "q"]) $(id).disabled = busy;
 }
+function setBusy(on) { busy = on; updateActions(); }
 
 // The .sortz bundle for this recording: timeline, metadata and video in one
 // file. Built once and reused for both the local copy and the upload -- a
@@ -196,7 +208,7 @@ async function run(action) {
     setStatus("Pick a ticket or type a ticket number first.", "err");
     return;
   }
-  if (action === "odoo" && !(selected && selected.id)) {
+  if (action === "odoo" && !(selected && Number.isInteger(selected.id) && selected.id > 0 && String(selected.ref) === $("manual").value.trim())) {
     setStatus("Choose the ticket from the list. A typed number alone cannot be written back to Odoo.", "err");
     return;
   }
@@ -289,20 +301,45 @@ saveToDisk = SortDiagnostics.trace("bundle.download", saveToDisk);
 $("q").addEventListener("input", render);
 $("manual").addEventListener("input", () => {
   const v = $("manual").value.trim();
-  if (!selected || selected.ref !== v) selected = tickets.find((t) => t.ref === v) || null;
+  if (!selected || String(selected.ref) !== v) selected = tickets.find((t) => String(t.ref) === v) || null;
   render();
 });
 $("reload").addEventListener("click", loadTickets);
 $("saveLocal").addEventListener("click", () => run("local"));
 $("saveUpload").addEventListener("click", () => run("upload"));
 $("saveUploadOdoo").addEventListener("click", () => run("odoo"));
-$("discard").addEventListener("click", async () => {
+const deleteDialog = $("deleteConfirm");
+$("discard").addEventListener("click", () => {
+  if (busy || !recording) return;
+  $("deleteError").textContent = "";
+  deleteDialog.showModal();
+});
+function cancelDelete() {
+  if (busy) return;
+  deleteDialog.close();
+  $("discard").focus();
+}
+$("cancelDelete").addEventListener("click", cancelDelete);
+deleteDialog.addEventListener("cancel", e => { e.preventDefault(); cancelDelete(); });
+$("confirmDelete").addEventListener("click", async () => {
   if (busy) return;
   setBusy(true);
-  await ask({ type: "deleteRecording", id: recId });
-  window.close();
+  $("confirmDelete").disabled = $("cancelDelete").disabled = true;
+  $("deleteError").textContent = "Deleting local recording and video...";
+  try {
+    const response = await ask({type: "deleteRecording", id: recId});
+    if (!response?.success) throw new Error(response?.error || "Recording could not be deleted. Try again.");
+    window.close();
+  } catch (e) {
+    $("deleteError").textContent = String(e.message || e);
+    setBusy(false);
+    $("confirmDelete").disabled = $("cancelDelete").disabled = false;
+  }
 });
-window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !busy) window.close(); });
+window.addEventListener("keydown", e => {
+  if (e.key === "Escape" && !busy && !deleteDialog.open) window.close();
+});
+updateActions();
 
 (async function init() {
   loadTheme();

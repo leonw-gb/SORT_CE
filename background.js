@@ -332,13 +332,40 @@ async function getAllRecordings() {
 }
 
 async function deleteRecording(id) {
+  if (typeof id !== "string" || !id) throw new Error("Invalid recording ID.");
+  if (activeSession?.id === id) throw new Error("Stop the recording before deleting it.");
   const db = await initDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(RECORDINGS_STORE, "readwrite");
+    // Timeline and video disappear together, or neither deletion commits.
+    const tx = db.transaction([RECORDINGS_STORE, VIDEOS_STORE], "readwrite");
     tx.objectStore(RECORDINGS_STORE).delete(id);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.objectStore(VIDEOS_STORE).delete(id);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = tx.onabort = () => { db.close(); reject(tx.error || new Error("Deletion failed.")); };
   });
+}
+
+// Popup drafts are local only and never used as live recording configuration.
+const SETTINGS_DRAFT_KEY = "sortSettingsDraft.v1";
+const SETTINGS_FIELDS = ["downloadFolder", "sipgateName", "odooUser", "odooKey", "callStateUrl", "callStateToken", "theme"];
+let settingsQueue = Promise.resolve();
+function queueSettings(work) {
+  SortUpdates.beginJob();
+  const result = settingsQueue.then(work).finally(() => SortUpdates.endJob());
+  settingsQueue = result.catch(() => {});
+  return result;
+}
+async function storeSettingsDraft(fields) {
+  if (!fields || typeof fields !== "object" || Array.isArray(fields)) throw new Error("Invalid draft.");
+  const clean = {};
+  for (const key of SETTINGS_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(fields, key)) continue;
+    if (typeof fields[key] !== "string" || fields[key].length > 16384) throw new Error("Draft field is too long.");
+    clean[key] = fields[key];
+  }
+  if (!Object.keys(clean).length) await chrome.storage.local.remove(SETTINGS_DRAFT_KEY);
+  else await chrome.storage.local.set({[SETTINGS_DRAFT_KEY]: {version: 1, fields: clean, updatedAt: Date.now()}});
+  return {success: true};
 }
 
 // ---- Active session ----------------------------------------------------------
@@ -1305,8 +1332,9 @@ const WORKER_MESSAGE_PAGES = {
   reminderResponse: ["continue.html"], keepRecording: ["continue.html"], promptContinue: ["popup.html"],
   nextTicketSequence: ["ticket.html"], finishRecording: ["ticket.html"], downloadVideo: ["ticket.html"],
   openTicketDialog: ["popup.html"], getShortcut: ["popup.html"], getSessionStatus: ["popup.html"],
-  getRecordings: ["popup.html", "ticket.html", "player.html"], deleteRecording: ["popup.html"],
+  getRecordings: ["popup.html", "ticket.html", "player.html"], deleteRecording: ["popup.html", "ticket.html"],
   getConfig: ["popup.html", "ticket.html", "player.html", "import.html", "continue.html", "capture.html"],
+  getSettingsDraft: ["popup.html"], saveSettingsDraft: ["popup.html"], clearSettingsDraft: ["popup.html"],
   saveConfig: ["popup.html"], clearCredentials: ["popup.html"], setTheme: ["popup.html"],
   exportRecording: ["popup.html", "player.html"], consumeNameWarning: ["popup.html"],
   openImport: ["popup.html"], importFinished: ["import.html"],
@@ -1552,13 +1580,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case "deleteRecording":
       deleteRecording(message.id)
-        .then(() => deleteVideo(message.id))
         .then(() => { broadcastRecordingsChanged(); return { success: true }; })
-        .then(sendResponse);
+        .then(sendResponse)
+        .catch(e => sendResponse({success: false, error: String(e.message || "Recording could not be deleted.")}));
       return true;
 
     case "getConfig":
-      getConfig().then(c => sendResponse(
+      queueSettings(() => getConfig()).then(c => sendResponse(
         SortSecurity.page(sender, ["popup.html"]) ? c :
         SortSecurity.page(sender, ["ticket.html"]) ? {theme: c.theme, downloadFolder: c.downloadFolder,
           sipgateName: c.sipgateName, upload: c.upload, odoo: c.odoo} : {theme: c.theme})).catch(() => sendResponse({success: false, error: "Settings could not be loaded."}));
@@ -1576,18 +1604,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       getConfig().then(c => saveConfig({...c, theme: message.theme})).then(() => sendResponse({success: true}))
         .catch(() => sendResponse({success: false, error: "Theme could not be saved."})); return true;
     case "clearCredentials":
-      getConfig().then(c => saveConfig({...c, odoo: {...c.odoo, apiKey: ""}, callTrigger: {...c.callTrigger, apiKey: ""}}))
-        .then(async () => { await syncCallPoller(); sendResponse({success: true}); })
-        .catch(() => sendResponse({success: false, error: "Could not finish removing tokens. Reopen Settings to verify."})); return true;
+      queueSettings(async () => {
+        const c = await getConfig();
+        await saveConfig({...c, odoo: {...c.odoo, apiKey: ""}, callTrigger: {...c.callTrigger, apiKey: ""}});
+        const draft = (await chrome.storage.local.get(SETTINGS_DRAFT_KEY))[SETTINGS_DRAFT_KEY];
+        if (draft?.fields) await storeSettingsDraft({...draft.fields, odooKey: "", callStateToken: ""});
+        await syncCallPoller();
+        return {success: true};
+      }).then(sendResponse).catch(() => sendResponse({success: false, error: "Could not finish removing tokens. Reopen Settings to verify."}));
+      return true;
+    case "getSettingsDraft":
+      queueSettings(async () => ({success: true, draft: (await chrome.storage.local.get(SETTINGS_DRAFT_KEY))[SETTINGS_DRAFT_KEY] || null}))
+        .then(sendResponse).catch(() => sendResponse({success: false, error: "Could not read the local settings draft."}));
+      return true;
+    case "saveSettingsDraft":
+      queueSettings(() => storeSettingsDraft(message.fields)).then(sendResponse)
+        .catch(() => sendResponse({success: false, error: "Draft could not be saved locally. Save your settings before closing."}));
+      return true;
+    case "clearSettingsDraft":
+      queueSettings(async () => { await chrome.storage.local.remove(SETTINGS_DRAFT_KEY); return {success: true}; })
+        .then(sendResponse).catch(() => sendResponse({success: false, error: "Draft could not be discarded."}));
+      return true;
     case "saveConfig":
-      saveConfig(message.config).then(() => {
-        // The "!" badge is a standing complaint about a missing name; retire it
-        // the moment one exists.
-        if (message.config && (message.config.sipgateName || "").trim()) clearNameWarning();
-        // A changed name, URL or key must take effect now, not at next restart.
-        syncCallPoller();
-        sendResponse({ success: true });
-      }).catch(() => sendResponse({success: false, error: "Settings could not be saved. Check the endpoint."}));
+      queueSettings(async () => {
+        await saveConfig(message.config);
+        let draftCleared = true;
+        try { await chrome.storage.local.remove(SETTINGS_DRAFT_KEY); } catch (_) { draftCleared = false; }
+        if ((message.config?.sipgateName || "").trim()) clearNameWarning();
+        void syncCallPoller();
+        return {success: true, config: await getConfig(), draftCleared};
+      }).then(sendResponse).catch(() => sendResponse({success: false, error: "Settings could not be saved. Check the endpoint."}));
       return true;
 
     case "exportRecording":

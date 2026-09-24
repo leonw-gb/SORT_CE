@@ -66,7 +66,12 @@
     border-radius:6px; padding:8px 13px; font-size:12px; font-family:inherit; cursor:pointer;
   }
   .btn:hover { color:var(--txt); border-color:var(--dim); }
-  .btn:disabled { opacity:.45; cursor:default; }
+  .btn:disabled { opacity:.55; cursor:not-allowed; }
+  .btn.primary:disabled { background:var(--panel2); border-color:var(--line2); color:var(--muted); }
+  dialog { margin:auto; max-width:420px; width:calc(100% - 32px); padding:20px; background:var(--panel); color:var(--txt); border:1px solid var(--line2); border-radius:8px; }
+  dialog::backdrop { background:#0009; }
+  dialog p { margin:12px 0; line-height:1.5; }
+  .dialog-actions { display:flex; gap:10px; justify-content:flex-end; }
   .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
   .btn.danger { color:var(--err); }
   .btn:focus-visible, tbody tr:focus-visible { outline:2px solid var(--link); outline-offset:1px; }
@@ -100,14 +105,23 @@
   <footer>
     <button class="btn" id="saveLocal">Save locally</button>
     <button class="btn primary" id="saveUpload">Save and upload session</button>
-    <button class="btn primary" id="saveUploadOdoo">Upload session and add link to ticket</button>
+    <button class="btn primary" id="saveUploadOdoo" disabled>Upload session and add link to ticket</button>
     <span class="spacer"></span>
     <button class="btn danger" id="discard">Delete recording</button>
   </footer>
 
   <div id="status">Pick a ticket, or type a number.<div id="bar"><i></i></div></div>
 
-  <script src="build-info.js"></script>
+  <dialog id="deleteConfirm" aria-labelledby="deleteTitle" aria-describedby="deleteDescription">
+  <h2 id="deleteTitle">Delete this recording?</h2>
+  <p id="deleteDescription">This permanently deletes the local recording and its video. Downloaded files, uploaded copies and Odoo links are not deleted.</p>
+  <p id="deleteError" role="alert"></p>
+  <div class="dialog-actions">
+    <button class="btn" id="cancelDelete" type="button" autofocus>Cancel</button>
+    <button class="btn danger" id="confirmDelete" type="button">Delete recording</button>
+  </div>
+</dialog>
+<script src="build-info.js"></script>
   <script src="diagnostics-core.js"></script>
   <script src="diagnostics.js"></script>
   <script src="defaults.js"></script>

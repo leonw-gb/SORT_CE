@@ -105,13 +105,19 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 // ---- Tab switching -----------------------------------------------------------
+function activateTab(tab) {
+  document.querySelectorAll(".tab-button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+  document.querySelectorAll(".tab-content").forEach(c => c.classList.toggle("active", c.id === tab));
+  if (tab === "recordings") loadRecordings();
+}
 document.querySelectorAll(".tab-button").forEach(btn => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".tab-button").forEach(b => b.classList.remove("active"));
-    document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
-    btn.classList.add("active");
-    document.getElementById(btn.dataset.tab).classList.add("active");
-    if (btn.dataset.tab === "recordings") loadRecordings();
+    if (settingsSaving) return;
+    if (btn.dataset.tab === "recordings" && settingsDirty()) {
+      document.getElementById("unsavedDialog").showModal();
+      return;
+    }
+    activateTab(btn.dataset.tab);
   });
 });
 
@@ -218,15 +224,35 @@ function stopElapsedTimer() {
 
 // ---- Recordings list ---------------------------------------------------------
 let lastListSignature = "";
+let recordingsRequest = 0;
+const expandedTicketGroups = new Map();
+function groupRecordings(recordings) {
+  const groups = new Map();
+  for (const rec of [...recordings].sort((a, b) => b.startTime - a.startTime)) {
+    const ref = String(rec.ticket?.ref ?? "").trim();
+    const key = ref ? "ticket:" + ref : "unassigned";
+    if (!groups.has(key)) groups.set(key, {key, ref, records: [], latest: Number(rec.startTime) || 0});
+    groups.get(key).records.push(rec);
+  }
+  return [...groups.values()].sort((a, b) => b.latest - a.latest);
+}
+function safeRecordingLink(value) {
+  try { const url = new URL(value); return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password ? url.href : ""; }
+  catch (_) { return ""; }
+}
+
 
 function loadRecordings() {
+  const request = ++recordingsRequest;
   chrome.runtime.sendMessage({ type: "getRecordings" }, (recordings) => {
+    if (request !== recordingsRequest) return;
     const list = document.getElementById("recordingList");
+    if (chrome.runtime.lastError || !Array.isArray(recordings)) return;
     // Redraw only on real change. Rewriting innerHTML on a timer would swallow
     // a click that lands in the same tick.
     const sig = JSON.stringify((recordings || []).map(r =>
-      [r.id, r.endTime, r.events.length, r.imported ? 1 : 0,
-       r.ticket ? [r.ticket.ref, r.ticket.seq, r.ticket.pending, r.ticket.uploadUrl] : 0]));
+      [r.id, r.startTime, r.recorder, r.video?.saved, r.endTime, (r.events || []).length, r.imported ? 1 : 0,
+       r.ticket ? [r.ticket.ref, r.ticket.seq, r.ticket.pending, r.ticket.uploadUrl, r.ticket.subject] : 0]));
     if (sig === lastListSignature) return;
     lastListSignature = sig;
     if (!recordings || recordings.length === 0) {
@@ -236,22 +262,27 @@ function loadRecordings() {
       return;
     }
 
-    list.innerHTML = importBar() + recordings
-      .sort((a, b) => b.startTime - a.startTime)
-      .map(rec => {
+    list.innerHTML = importBar() + groupRecordings(recordings).map(group => {
+      const open = expandedTicketGroups.has(group.key) ? expandedTicketGroups.get(group.key) : !group.ref;
+      const subject = group.records.find(rec => rec.ticket?.subject)?.ticket.subject || "";
+      return `<details class="ticket-folder" data-group="${esc(group.key)}" ${open ? "open" : ""}>
+        <summary><span class="folder-label">${group.ref ? "Ticket " + esc(group.ref) : "Unassigned"}</span>
+          <span class="folder-count">${group.records.length} session${group.records.length === 1 ? "" : "s"}</span>
+          ${subject ? `<span class="folder-subject">${esc(subject)}</span>` : ""}</summary>
+        <div class="folder-entries">` + group.records.map(rec => {
         const tabCount = Object.keys(rec.tabs || {}).length;
         const dur = rec.endTime ? formatDuration(rec.endTime - rec.startTime) : "—";
         const t = rec.ticket;
         // A recording with a video but no ticket, or one whose upload failed,
         // is unfinished business. Say so, and offer the way back in.
-        const unfinished = !!(rec.video && rec.video.saved) && (!t || t.pending);
+        const unfinished = !!(rec.video && rec.video.saved) && (!t?.ref || t.pending);
         // ticket_seq: the session identifier, same string as the video
         // filename and the ticket link.
         const tag = t && t.ref && !t.pending
           ? `<span class="ticket-tag">${esc(t.ref)}_${String(t.seq || 1).padStart(3, "0")}</span>`
           : (unfinished ? `<span class="ticket-tag pending">Not assigned</span>` : "");
-        const link = t && t.uploadUrl
-          ? ` &middot; <a href="${t.uploadUrl}" target="_blank" style="color:var(--link)">video link</a>` : "";
+        const url = safeRecordingLink(t?.uploadUrl);
+        const link = url ? ` &middot; <a href="${esc(url)}" target="_blank" rel="noopener noreferrer" style="color:var(--link)">recording link</a>` : "";
         // Someone else's session sitting in my list is confusing unless it says
         // so. The name comes from the bundle, so it is the recorder's, not mine.
         const from = rec.imported
@@ -262,16 +293,19 @@ function loadRecordings() {
             <span>${formatDate(rec.startTime)}</span>
             <span style="color:var(--ink-faint)">${dur}</span>
           </div>
-          <div class="recording-meta">${from}${tag}${tabCount} tab(s) &middot; ${rec.events.length} events${link}</div>
+          <div class="recording-meta">${from}${tag}${tabCount} tab(s) &middot; ${(rec.events || []).length} events${link}</div>
           <div class="recording-actions">
-            ${unfinished && !rec.imported ? `<button data-action="ticket" data-id="${rec.id}">Assign ticket</button>` : ""}
-            <button data-action="replay" data-id="${rec.id}">▶ Replay</button>
-            ${rec.imported ? "" : `<button data-action="export" data-id="${rec.id}">Export</button>`}
-            <button data-action="delete" data-id="${rec.id}" class="danger">Delete</button>
+            ${unfinished && !rec.imported ? `<button data-action="ticket" data-id="${esc(rec.id)}">Assign ticket</button>` : ""}
+            <button data-action="replay" data-id="${esc(rec.id)}">▶ Replay</button>
+            ${rec.imported ? "" : `<button data-action="export" data-id="${esc(rec.id)}">Export</button>`}
+            <button data-action="delete" data-id="${esc(rec.id)}" class="danger">Delete</button>
           </div>
         </div>`;
-      })
-      .join("");
+      }).join("") + "</div></details>";
+    }).join("");
+    list.querySelectorAll("details[data-group]").forEach(folder => {
+      folder.addEventListener("toggle", () => expandedTicketGroups.set(folder.dataset.group, folder.open));
+    });
 
     wireImport(list);
 
@@ -304,7 +338,7 @@ function wireImport(list) {
 
 function esc(s) {
   return String(s == null ? "" : s)
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 function openReplay(id) {
@@ -356,12 +390,14 @@ function clearNameFlag() {
   if (err) err.textContent = "";
 }
 
-function deleteRecording(id) {
-  if (!confirm("Delete this recording?")) return;
-  chrome.runtime.sendMessage({ type: "deleteRecording", id }, () => {
+async function deleteRecording(id) {
+  if (!confirm("Delete this local recording and its video? Downloaded and uploaded copies are not deleted.")) return;
+  try {
+    const response = await chrome.runtime.sendMessage({type: "deleteRecording", id});
+    if (!response?.success) throw new Error(response?.error || "Deletion failed.");
     showToast("Deleted");
     loadRecordings();
-  });
+  } catch (e) { showToast(String(e.message || e), 5000); }
 }
 
 let settingsLoaded = false;
@@ -383,21 +419,105 @@ function currentConfig() {
   });
 }
 
-document.getElementById("saveConfig").addEventListener("click", () => {
-  if (!settingsLoaded) { showToast("Settings are still loading."); return; }
-  const endpoint = val("callStateUrl");
-  if (endpoint && !validCallEndpoint(endpoint)) { showToast("Enter an HTTP or HTTPS endpoint without embedded credentials."); return; }
-  // Required, because it is the only thing that says whose session a shared
-  // bundle is. Everything else here has a sane default; this cannot.
-  if (!val("sipgateName")) {
-    flagNameField("Enter your name before saving. Recordings are shared under it.");
-    return;
-  }
-  clearNameFlag();
-  chrome.runtime.sendMessage({ type: "saveConfig", config: currentConfig() }, (res) => {
-    showToast(res?.success ? "Settings saved" : (res?.error || "Settings were not saved"));
+const SETTINGS_INPUTS = ["downloadFolder", "sipgateName", "odooUser", "odooKey", "callStateUrl", "callStateToken"];
+let settingsBaseline = null;
+let settingsSaving = false;
+let draftRevision = 0;
+function formValues() {
+  return Object.fromEntries([...SETTINGS_INPUTS.map(id => [id, document.getElementById(id).value]), ["theme", currentTheme]]);
+}
+function valuesFromConfig(config) {
+  const c = withFixedSettings(config);
+  return {downloadFolder: c.downloadFolder || "Recordings", sipgateName: c.sipgateName || "",
+    odooUser: c.odoo?.username || "", odooKey: c.odoo?.apiKey || "",
+    callStateUrl: c.callTrigger?.url || "", callStateToken: c.callTrigger?.apiKey || "", theme: c.theme || "dark"};
+}
+function fillSettings(values) {
+  for (const id of SETTINGS_INPUTS) document.getElementById(id).value = values[id] || "";
+  document.getElementById("callStateUrl").readOnly = !!FIXED.callTrigger.url;
+  markTheme(values.theme);
+}
+function draftFields() {
+  if (!settingsBaseline) return {};
+  return Object.fromEntries(Object.entries(formValues()).filter(([key, value]) => value !== settingsBaseline[key]));
+}
+function settingsDirty() { return settingsLoaded && Object.keys(draftFields()).length > 0; }
+function setSettingsLocked(locked) {
+  for (const id of SETTINGS_INPUTS) document.getElementById(id).disabled = locked;
+  document.querySelectorAll("[data-theme-choice]").forEach(b => { b.disabled = locked; });
+  for (const id of ["saveConfig", "discardSettings", "clearCredentials", "unsavedSave", "unsavedDiscard", "unsavedKeep"])
+    document.getElementById(id).disabled = locked;
+}
+function showDraftStatus(message) {
+  const dirty = settingsDirty();
+  document.getElementById("settingsDraftNotice").hidden = !dirty && !message;
+  document.getElementById("settingsDraftStatus").textContent = message || (dirty ? "Unsaved changes. Save to apply them." : "");
+  document.getElementById("discardSettings").hidden = !dirty;
+}
+function trackSettingsChange() {
+  if (!settingsLoaded || settingsSaving) return;
+  const revision = ++draftRevision;
+  const fields = draftFields();
+  showDraftStatus(Object.keys(fields).length ? "Unsaved changes. Saving a local recovery draft..." : "");
+  // Send on every input, not on popup unload: Chrome can destroy a popup instantly.
+  chrome.runtime.sendMessage({type: "saveSettingsDraft", fields}).then(result => {
+    if (revision !== draftRevision || settingsSaving) return;
+    if (!result?.success) throw new Error(result?.error || "Draft was not saved.");
+    showDraftStatus(settingsDirty() ? "Unsaved changes — recovery draft saved locally. Save settings to apply them." : "");
+  }).catch(e => {
+    if (revision === draftRevision && !settingsSaving) showDraftStatus(String(e.message || e));
   });
-});
+}
+async function saveSettings() {
+  if (!settingsLoaded || settingsSaving) return false;
+  const endpoint = val("callStateUrl");
+  if (endpoint && !validCallEndpoint(endpoint)) { showDraftStatus("Enter an HTTP or HTTPS endpoint without embedded credentials."); return false; }
+  if (!val("sipgateName")) {
+    showDraftStatus("Enter your name before saving.");
+    flagNameField("Enter your name before saving. Recordings are shared under it.");
+    return false;
+  }
+  clearNameFlag(); settingsSaving = true; ++draftRevision; setSettingsLocked(true);
+  try {
+    const result = await chrome.runtime.sendMessage({type: "saveConfig", config: currentConfig()});
+    if (!result?.success) throw new Error(result?.error || "Settings were not saved.");
+    settingsBaseline = valuesFromConfig(result.config || currentConfig());
+    fillSettings(settingsBaseline);
+    showDraftStatus(result.draftCleared === false ? "Settings saved, but the old recovery draft could not be cleared. Retry Save before closing." : "");
+    showToast("Settings saved");
+    return result.draftCleared !== false;
+  } catch (e) { showDraftStatus(String(e.message || e)); return false; }
+  finally { settingsSaving = false; setSettingsLocked(false); }
+}
+async function discardSettings() {
+  if (!settingsLoaded || settingsSaving) return false;
+  settingsSaving = true; ++draftRevision; setSettingsLocked(true);
+  try {
+    const c = await chrome.runtime.sendMessage({type: "getConfig"});
+    if (!c || c.success === false) throw new Error("Saved settings could not be loaded.");
+    const result = await chrome.runtime.sendMessage({type: "clearSettingsDraft"});
+    if (!result?.success) throw new Error(result?.error || "Draft could not be discarded.");
+    settingsBaseline = valuesFromConfig(c); fillSettings(settingsBaseline); clearNameFlag(); showDraftStatus("");
+    return true;
+  } catch (e) { showDraftStatus(String(e.message || e)); return false; }
+  finally { settingsSaving = false; setSettingsLocked(false); }
+}
+for (const id of SETTINGS_INPUTS) {
+  document.getElementById(id).addEventListener("input", trackSettingsChange);
+  document.getElementById(id).addEventListener("change", trackSettingsChange);
+}
+document.getElementById("saveConfig").addEventListener("click", saveSettings);
+document.getElementById("discardSettings").addEventListener("click", discardSettings);
+const unsavedDialog = document.getElementById("unsavedDialog");
+function keepEditing() { if (!settingsSaving) { unsavedDialog.close(); activateTab("settings"); } }
+document.getElementById("unsavedKeep").addEventListener("click", keepEditing);
+unsavedDialog.addEventListener("cancel", event => { event.preventDefault(); keepEditing(); });
+for (const [id, action] of [["unsavedSave", saveSettings], ["unsavedDiscard", discardSettings]]) {
+  document.getElementById(id).addEventListener("click", async () => {
+    if (await action()) { unsavedDialog.close(); activateTab("recordings"); }
+    else if (!settingsSaving) { unsavedDialog.close(); activateTab("settings"); }
+  });
+}
 
 document.getElementById("sipgateName").addEventListener("input", clearNameFlag);
 
@@ -423,18 +543,18 @@ document.getElementById("editShortcut").addEventListener("click", () => {
 let currentTheme = "dark";
 
 function markTheme(theme) {
-  currentTheme = saveTheme(theme);
+  currentTheme = applyTheme(theme);
   document.querySelectorAll("[data-theme-choice]").forEach((b) => {
     b.setAttribute("aria-pressed", String(b.dataset.themeChoice === currentTheme));
   });
 }
 
 document.querySelectorAll("[data-theme-choice]").forEach((b) => {
-  // Applied on click, not on Save: a theme you have to confirm is a theme you
-  // cannot preview.
+  // Preview immediately; persist only with the rest of the settings.
   b.addEventListener("click", () => {
+    if (!settingsLoaded || settingsSaving) return;
     markTheme(b.dataset.themeChoice);
-    chrome.runtime.sendMessage({ type: "setTheme", theme: currentTheme });
+    trackSettingsChange();
   });
 });
 
@@ -689,24 +809,30 @@ document.getElementById("testCall").addEventListener("click", async () => {
   });
 });
 
-function loadConfig() {
-  chrome.runtime.sendMessage({ type: "getConfig" }, (config) => {
-    if (chrome.runtime.lastError || !config || config.success === false) {
-      settingsLoaded = false;
-      showToast("Settings could not be loaded. Reopen SORT before saving.", 5000);
-      return;
+async function loadConfig() {
+  setSettingsLocked(true);
+  try {
+    const config = await chrome.runtime.sendMessage({type: "getConfig"});
+    if (!config || config.success === false) throw new Error("Settings could not be loaded. Reopen SORT before saving.");
+    settingsBaseline = valuesFromConfig(config); fillSettings(settingsBaseline);
+    const result = await chrome.runtime.sendMessage({type: "getSettingsDraft"});
+    if (!result?.success) throw new Error(result?.error || "Local draft could not be checked. Reopen SORT.");
+    const draft = result.draft;
+    if (draft?.version === 1 && draft.fields && typeof draft.fields === "object") {
+      const restored = {...settingsBaseline};
+      for (const key of [...SETTINGS_INPUTS, "theme"]) {
+        if (typeof draft.fields[key] === "string") restored[key] = draft.fields[key];
+      }
+      if (FIXED.callTrigger.url) restored.callStateUrl = settingsBaseline.callStateUrl;
+      fillSettings(restored);
     }
-    const c = withFixedSettings(config);
-    document.getElementById("downloadFolder").value = c.downloadFolder;
-    document.getElementById("sipgateName").value = c.sipgateName || "";
-    document.getElementById("odooUser").value = c.odoo?.username || "";
-    document.getElementById("odooKey").value = c.odoo?.apiKey || "";
-    document.getElementById("callStateUrl").value = c.callTrigger?.url || "";
-    document.getElementById("callStateUrl").readOnly = !!FIXED.callTrigger.url;
-    document.getElementById("callStateToken").value = c.callTrigger?.apiKey || "";
-    settingsLoaded = true;
-    markTheme(c.theme);
-  });
+    settingsLoaded = true; setSettingsLocked(false);
+    if (settingsDirty()) {
+      showSettingsTab(); showDraftStatus("Recovered unsaved changes. Save to apply them or discard the draft.");
+    } else showDraftStatus("");
+  } catch (e) {
+    settingsLoaded = false; showSettingsTab(); showDraftStatus(String(e.message || e));
+  }
 }
 
 // ---- Helpers -----------------------------------------------------------------
@@ -746,7 +872,7 @@ window.addEventListener("focus", () => { loadRecordings(); refreshStatus(); });
 setInterval(() => { if (!document.hidden) { loadRecordings(); refreshStatus(); } }, 3000);
 
 // ---- Init -------------------------------------------------------------------
-loadTheme();
+applyTheme("dark");
 loadShortcut();
 loadConfig();
 loadRecordings();
@@ -785,14 +911,21 @@ function validCallEndpoint(value) {
   try { const u = new URL(value); return ["http:", "https:"].includes(u.protocol) && !u.username && !u.password; } catch (_) { return false; }
 }
 document.getElementById("clearCredentials").addEventListener("click", async () => {
-  if (!confirm("Remove the saved Odoo API key and shared call-state token from this Chrome profile?")) return;
+  if (!settingsLoaded || settingsSaving) return;
+  if (!confirm("Remove saved and draft Odoo API keys and call-state tokens from this Chrome profile?")) return;
+  settingsSaving = true; ++draftRevision; setSettingsLocked(true);
+  let cleared = false;
   try {
     const res = await chrome.runtime.sendMessage({type: "clearCredentials"});
-    if (!res?.success) throw new Error();
-    document.getElementById("odooKey").value = "";
-    document.getElementById("callStateToken").value = "";
-    showToast("Saved tokens removed. Call polling is disabled until configured again.", 5000);
-  } catch (_) { showToast("Tokens could not be removed. Try again."); }
+    if (!res?.success) throw new Error(res?.error || "Tokens could not be removed.");
+    for (const id of ["odooKey", "callStateToken"]) {
+      document.getElementById(id).value = ""; settingsBaseline[id] = "";
+    }
+    cleared = true;
+    showToast("Saved and draft tokens removed.", 5000);
+  } catch (e) { showDraftStatus(String(e.message || e)); }
+  finally { settingsSaving = false; setSettingsLocked(false); }
+  if (cleared) trackSettingsChange();
 });
 let updateBusy = false;
 async function refreshUpdatePanel() {
@@ -820,6 +953,7 @@ document.getElementById("checkUpdate").addEventListener("click", async () => {
   finally { btn.disabled = false; await refreshUpdatePanel(); }
 });
 document.getElementById("restartUpdate").addEventListener("click", async () => {
+  if (settingsDirty()) { showSettingsTab(); showDraftStatus("Save or discard your unsaved settings before restarting SORT."); return; }
   updateBusy = true; document.getElementById("restartUpdate").disabled = true;
   document.getElementById("updateMessage").textContent = "Checking that SORT can restart safely...";
   try {

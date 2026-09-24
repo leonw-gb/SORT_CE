@@ -333,6 +333,22 @@
     .toast { max-width: calc(100% - 28px); white-space: normal; overflow-wrap: anywhere; }
     @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
     @keyframes fadeUp { from { opacity:0; transform: translateX(-50%) translateY(8px); } }
+
+    .settings-draft { margin:0 0 12px; padding:12px; border:1px solid var(--accent); background:var(--surface2); font-size:12px; line-height:1.5; }
+    .settings-draft .btn { margin-top:8px; }
+    .ticket-folder { margin:8px 0; border:1px solid var(--edge2); background:var(--surface); border-radius:5px; overflow:hidden; }
+    .ticket-folder summary { cursor:pointer; padding:12px 10px; font-size:13px; color:var(--ink-strong); }
+    .ticket-folder summary:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+    .folder-count { float:right; font-size:11px; color:var(--ink-soft); }
+    .folder-label { overflow-wrap:anywhere; font-weight:600; }
+    .folder-subject { display:block; margin:5px 0 0 14px; font-size:11px; color:var(--ink-soft); overflow-wrap:anywhere; }
+    .folder-entries { border-top:1px solid var(--edge); padding:0 8px; }
+    .folder-entries .recording-item { margin:8px 0; }
+    #unsavedDialog { margin:auto; width:calc(100% - 24px); max-width:336px; padding:18px; border:1px solid var(--edge2); border-radius:8px; background:var(--surface); color:var(--ink); }
+    #unsavedDialog::backdrop { background:#0009; }
+    #unsavedDialog h2 { font-size:17px; }
+    #unsavedDialog p { font-size:12px; line-height:1.5; margin:12px 0; }
+    #unsavedDialog button { display:block; width:100%; margin-top:8px; }
   </style>
 </head>
 <body>
@@ -380,6 +396,12 @@
   </div>
 
   <div id="settings" class="tab-content">
+    <div id="settingsDraftNotice" class="settings-draft" hidden>
+      <strong>Settings need attention</strong>
+      <p id="settingsDraftStatus" role="status" aria-live="polite"></p>
+      <button id="discardSettings" class="btn btn-secondary" type="button">Discard unsaved changes</button>
+    </div>
+    <p class="help-text" style="margin-bottom:12px">Unsaved edits are kept as a local recovery draft, not applied until Save. Drafts may contain credentials and have no additional encryption. Chrome can close this popup when you click elsewhere.</p>
 
     <fieldset>
       <legend>Appearance</legend>
@@ -535,6 +557,13 @@
     </div>
   </dialog>
 
+  <dialog id="unsavedDialog" aria-labelledby="unsavedTitle" aria-describedby="unsavedDescription">
+    <h2 id="unsavedTitle">Unsaved settings</h2>
+    <p id="unsavedDescription">Save your changes before opening Recordings, discard them, or keep editing.</p>
+    <button id="unsavedSave" class="btn btn-primary" type="button">Save and continue</button>
+    <button id="unsavedDiscard" class="btn btn-secondary" type="button">Discard and continue</button>
+    <button id="unsavedKeep" class="btn btn-secondary" type="button" autofocus>Keep editing</button>
+  </dialog>
   <script src="build-info.js"></script>
   <script src="diagnostics-core.js"></script>
   <script src="diagnostics.js"></script>
