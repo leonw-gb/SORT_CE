@@ -236,6 +236,28 @@ function groupRecordings(recordings) {
   }
   return [...groups.values()].sort((a, b) => b.latest - a.latest);
 }
+// Search: every whitespace-separated term must match the ticket number,
+// ticket title or one of several common date spellings.
+let recordingsCache = null;
+function searchTerms() {
+  return (document.getElementById("recordingSearch").value || "").toLowerCase().split(/\s+/).filter(Boolean);
+}
+function recordingSearchText(rec) {
+  const d = new Date(rec.startTime);
+  const parts = [rec.ticket?.ref, rec.ticket?.subject];
+  if (!isNaN(d)) {
+    const dd = String(d.getDate()).padStart(2, "0"), mm = String(d.getMonth() + 1).padStart(2, "0"), y = d.getFullYear();
+    parts.push(`${y}-${mm}-${dd}`, `${dd}.${mm}.${y}`, `${d.getDate()}.${d.getMonth() + 1}.${y}`, `${dd}/${mm}/${y}`,
+      formatDate(rec.startTime), d.toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" }),
+      d.toLocaleDateString("en", { day: "numeric", month: "long", year: "numeric" }),
+      d.toLocaleDateString("de", { day: "numeric", month: "long", year: "numeric" }));
+  }
+  return parts.filter(Boolean).join(" ").toLowerCase();
+}
+function filterRecordings(recordings, terms) {
+  if (!terms.length) return recordings;
+  return recordings.filter(rec => { const text = recordingSearchText(rec); return terms.every(term => text.includes(term)); });
+}
 function safeRecordingLink(value) {
   try { const url = new URL(value); return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password ? url.href : ""; }
   catch (_) { return ""; }
@@ -248,13 +270,28 @@ function loadRecordings() {
     if (request !== recordingsRequest) return;
     const list = document.getElementById("recordingList");
     if (chrome.runtime.lastError || !Array.isArray(recordings)) return;
+    recordingsCache = recordings;
+    renderRecordings(recordings);
+  });
+}
+
+function renderRecordings(allRecordings) {
+    const list = document.getElementById("recordingList");
+    const terms = searchTerms();
+    const recordings = filterRecordings(allRecordings, terms);
     // Redraw only on real change. Rewriting innerHTML on a timer would swallow
     // a click that lands in the same tick.
     const sig = JSON.stringify((recordings || []).map(r =>
       [r.id, r.startTime, r.recorder, r.video?.saved, r.endTime, (r.events || []).length, r.imported ? 1 : 0,
        r.ticket ? [r.ticket.ref, r.ticket.seq, r.ticket.pending, r.ticket.uploadUrl, r.ticket.subject] : 0]));
-    if (sig === lastListSignature) return;
-    lastListSignature = sig;
+    const fullSig = sig + "|" + terms.join(" ") + "|" + allRecordings.length;
+    if (fullSig === lastListSignature) return;
+    lastListSignature = fullSig;
+    if (terms.length && recordings.length === 0 && allRecordings.length) {
+      list.innerHTML = importBar() + '<div class="empty-state">No recordings match your search.</div>';
+      wireImport(list);
+      return;
+    }
     if (!recordings || recordings.length === 0) {
       list.innerHTML = importBar() +
         '<div class="empty-state">No recordings yet — press Start to begin, or import a colleague\'s session.</div>';
@@ -263,7 +300,7 @@ function loadRecordings() {
     }
 
     list.innerHTML = importBar() + groupRecordings(recordings).map(group => {
-      const open = expandedTicketGroups.has(group.key) ? expandedTicketGroups.get(group.key) : !group.ref;
+      const open = terms.length ? true : expandedTicketGroups.has(group.key) ? expandedTicketGroups.get(group.key) : !group.ref;
       const subject = group.records.find(rec => rec.ticket?.subject)?.ticket.subject || "";
       return `<details class="ticket-folder" data-group="${esc(group.key)}" ${open ? "open" : ""}>
         <summary><span class="folder-label">${group.ref ? "Ticket " + esc(group.ref) : "Unassigned"}</span>
@@ -304,7 +341,7 @@ function loadRecordings() {
       }).join("") + "</div></details>";
     }).join("");
     list.querySelectorAll("details[data-group]").forEach(folder => {
-      folder.addEventListener("toggle", () => expandedTicketGroups.set(folder.dataset.group, folder.open));
+      folder.addEventListener("toggle", () => { if (!searchTerms().length) expandedTicketGroups.set(folder.dataset.group, folder.open); });
     });
 
     wireImport(list);
@@ -321,8 +358,8 @@ function loadRecordings() {
         if (action === "delete")  deleteRecording(id);
       });
     });
-  });
 }
+document.getElementById("recordingSearch").addEventListener("input", () => { if (recordingsCache) renderRecordings(recordingsCache); });
 
 function importBar() {
   return `<div class="import-bar">

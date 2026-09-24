@@ -287,6 +287,14 @@
     }
     .btn-import:hover { border-color: var(--accent); color: var(--accent); }
     .btn-import:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+    .recording-search { margin-bottom: 10px; }
+    .visually-hidden { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+    .recording-search input {
+      width: 100%; padding: 8px 10px; border: 1px solid var(--edge2); border-radius: 5px;
+      background: var(--page); color: var(--ink); font-size: 12px; font-family: inherit;
+    }
+    .recording-search input:focus { outline: none; border-color: var(--accent); }
+    .recording-search input::placeholder { color: var(--ink-faint); }
 
     /* A colleague's session must never read as one of mine. */
     .recording-item.imported { border-left: 3px solid var(--link); }
@@ -392,6 +400,10 @@
   </div>
 
   <div id="recordings" class="tab-content active">
+    <div class="recording-search" role="search">
+      <label for="recordingSearch" class="visually-hidden">Search recordings</label>
+      <input type="search" id="recordingSearch" placeholder="Search date, ticket number or title" autocomplete="off" spellcheck="false">
+    </div>
     <div class="recording-list" id="recordingList">
       <div class="empty-state">No recordings yet — press Start to begin.</div>
     </div>
