@@ -236,28 +236,41 @@ function groupRecordings(recordings) {
   }
   return [...groups.values()].sort((a, b) => b.latest - a.latest);
 }
-// Search: every whitespace-separated term must match the ticket number,
-// ticket title or one of several common date spellings.
+// Search: every whitespace-separated term must match the ticket number or
+// title. Dates are filtered separately with the calendar range picker.
 let recordingsCache = null;
+let dateRange = null;          // {start, end} local-midnight timestamps, inclusive
+let pickStart = null;          // first click of a range still being chosen
+let pickerMonth = null;        // Date on the 1st of the displayed month
 function searchTerms() {
   return (document.getElementById("recordingSearch").value || "").toLowerCase().split(/\s+/).filter(Boolean);
 }
 function recordingSearchText(rec) {
-  const d = new Date(rec.startTime);
-  const parts = [rec.ticket?.ref, rec.ticket?.subject];
-  if (!isNaN(d)) {
-    const dd = String(d.getDate()).padStart(2, "0"), mm = String(d.getMonth() + 1).padStart(2, "0"), y = d.getFullYear();
-    parts.push(`${y}-${mm}-${dd}`, `${dd}.${mm}.${y}`, `${d.getDate()}.${d.getMonth() + 1}.${y}`, `${dd}/${mm}/${y}`,
-      formatDate(rec.startTime), d.toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" }),
-      d.toLocaleDateString("en", { day: "numeric", month: "long", year: "numeric" }),
-      d.toLocaleDateString("de", { day: "numeric", month: "long", year: "numeric" }));
-  }
-  return parts.filter(Boolean).join(" ").toLowerCase();
+  return [rec.ticket?.ref, rec.ticket?.subject].filter(Boolean).join(" ").toLowerCase();
 }
-function filterRecordings(recordings, terms) {
-  if (!terms.length) return recordings;
-  return recordings.filter(rec => { const text = recordingSearchText(rec); return terms.every(term => text.includes(term)); });
+function dayStart(ts) { const d = new Date(ts); d.setHours(0, 0, 0, 0); return d.getTime(); }
+function inDateRange(rec, range) {
+  if (!range) return true;
+  const t = Number(rec.startTime);
+  if (!Number.isFinite(t)) return false;
+  const end = new Date(range.end); end.setDate(end.getDate() + 1);
+  return t >= range.start && t < end.getTime();
 }
+function filterRecordings(recordings, terms, range) {
+  return recordings.filter(rec => inDateRange(rec, range) &&
+    (!terms.length || terms.every(term => recordingSearchText(rec).includes(term))));
+}
+function chooseDay(ts) {
+  if (pickStart === null) { pickStart = ts; return false; }
+  const a = Math.min(pickStart, ts), b = Math.max(pickStart, ts);
+  dateRange = {start: a, end: b}; pickStart = null;
+  return true;
+}
+function rangeLabel(range) {
+  const f = ts => new Date(ts).toLocaleDateString([], {day: "numeric", month: "short", year: "numeric"});
+  return range.start === range.end ? f(range.start) : `${f(range.start)} \u2013 ${f(range.end)}`;
+}
+
 function safeRecordingLink(value) {
   try { const url = new URL(value); return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password ? url.href : ""; }
   catch (_) { return ""; }
@@ -278,16 +291,17 @@ function loadRecordings() {
 function renderRecordings(allRecordings) {
     const list = document.getElementById("recordingList");
     const terms = searchTerms();
-    const recordings = filterRecordings(allRecordings, terms);
+    const filtering = terms.length > 0 || !!dateRange;
+    const recordings = filterRecordings(allRecordings, terms, dateRange);
     // Redraw only on real change. Rewriting innerHTML on a timer would swallow
     // a click that lands in the same tick.
     const sig = JSON.stringify((recordings || []).map(r =>
       [r.id, r.startTime, r.recorder, r.video?.saved, r.endTime, (r.events || []).length, r.imported ? 1 : 0,
        r.ticket ? [r.ticket.ref, r.ticket.seq, r.ticket.pending, r.ticket.uploadUrl, r.ticket.subject] : 0]));
-    const fullSig = sig + "|" + terms.join(" ") + "|" + allRecordings.length;
+    const fullSig = sig + "|" + terms.join(" ") + "|" + (dateRange ? dateRange.start + "-" + dateRange.end : "") + "|" + allRecordings.length;
     if (fullSig === lastListSignature) return;
     lastListSignature = fullSig;
-    if (terms.length && recordings.length === 0 && allRecordings.length) {
+    if (filtering && recordings.length === 0 && allRecordings.length) {
       list.innerHTML = importBar() + '<div class="empty-state">No recordings match your search.</div>';
       wireImport(list);
       return;
@@ -300,7 +314,7 @@ function renderRecordings(allRecordings) {
     }
 
     list.innerHTML = importBar() + groupRecordings(recordings).map(group => {
-      const open = terms.length ? true : expandedTicketGroups.has(group.key) ? expandedTicketGroups.get(group.key) : !group.ref;
+      const open = filtering ? true : expandedTicketGroups.has(group.key) ? expandedTicketGroups.get(group.key) : !group.ref;
       const subject = group.records.find(rec => rec.ticket?.subject)?.ticket.subject || "";
       return `<details class="ticket-folder" data-group="${esc(group.key)}" ${open ? "open" : ""}>
         <summary><span class="folder-label">${group.ref ? "Ticket " + esc(group.ref) : "Unassigned"}</span>
@@ -341,7 +355,7 @@ function renderRecordings(allRecordings) {
       }).join("") + "</div></details>";
     }).join("");
     list.querySelectorAll("details[data-group]").forEach(folder => {
-      folder.addEventListener("toggle", () => { if (!searchTerms().length) expandedTicketGroups.set(folder.dataset.group, folder.open); });
+      folder.addEventListener("toggle", () => { if (!searchTerms().length && !dateRange) expandedTicketGroups.set(folder.dataset.group, folder.open); });
     });
 
     wireImport(list);
@@ -360,6 +374,70 @@ function renderRecordings(allRecordings) {
     });
 }
 document.getElementById("recordingSearch").addEventListener("input", () => { if (recordingsCache) renderRecordings(recordingsCache); });
+
+// ---- Date range picker -------------------------------------------------------
+const datePicker = document.getElementById("datePicker");
+const dateButton = document.getElementById("dateFilterButton");
+function renderDatePicker() {
+  const month = pickerMonth.getMonth(), year = pickerMonth.getFullYear();
+  document.getElementById("dpMonth").textContent = pickerMonth.toLocaleDateString([], {month: "long", year: "numeric"});
+  const first = new Date(year, month, 1);
+  const lead = (first.getDay() + 6) % 7;              // Monday-first weeks
+  const today = dayStart(Date.now());
+  const recDays = new Set((recordingsCache || []).map(r => dayStart(r.startTime)));
+  const days = document.getElementById("dpDays");
+  days.textContent = "";
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(year, month, 1 - lead + i), ts = d.getTime();
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "dp-day"; b.textContent = d.getDate(); b.dataset.ts = ts;
+    b.setAttribute("aria-label", d.toLocaleDateString([], {weekday: "long", day: "numeric", month: "long", year: "numeric"}));
+    if (d.getMonth() !== month) b.classList.add("other");
+    if (ts === today) b.classList.add("today");
+    if (recDays.has(ts)) b.classList.add("has-rec");
+    const lo = pickStart !== null ? pickStart : dateRange?.start, hi = pickStart !== null ? pickStart : dateRange?.end;
+    if (lo != null && ts >= lo && ts <= hi) b.classList.add("in-range");
+    if (ts === lo || ts === hi) { b.classList.add("edge"); b.setAttribute("aria-pressed", "true"); }
+    days.appendChild(b);
+  }
+  document.getElementById("dpHint").textContent = pickStart !== null ? "Pick an end day (same day = one day)" : "Pick a start day";
+}
+function renderDateFilter() {
+  const chip = document.getElementById("dateFilterChip");
+  chip.hidden = !dateRange;
+  document.getElementById("dateFilterText").textContent = dateRange ? rangeLabel(dateRange) : "";
+  dateButton.classList.toggle("active", !!dateRange);
+  dateButton.setAttribute("aria-label", dateRange ? "Filter by date: " + rangeLabel(dateRange) : "Filter by date");
+  if (recordingsCache) renderRecordings(recordingsCache);
+}
+function openDatePicker() {
+  pickStart = null;
+  const base = new Date(dateRange ? dateRange.start : Date.now());
+  pickerMonth = new Date(base.getFullYear(), base.getMonth(), 1);
+  renderDatePicker();
+  datePicker.hidden = false; dateButton.setAttribute("aria-expanded", "true");
+  (datePicker.querySelector(".dp-day.edge") || datePicker.querySelector(".dp-day.today") || datePicker.querySelector(".dp-day")).focus();
+}
+function closeDatePicker(focusButton) {
+  if (datePicker.hidden) return;
+  datePicker.hidden = true; pickStart = null; dateButton.setAttribute("aria-expanded", "false");
+  if (focusButton) dateButton.focus();
+}
+dateButton.addEventListener("click", () => datePicker.hidden ? openDatePicker() : closeDatePicker(true));
+document.getElementById("dpPrev").addEventListener("click", () => { pickerMonth.setMonth(pickerMonth.getMonth() - 1); renderDatePicker(); });
+document.getElementById("dpNext").addEventListener("click", () => { pickerMonth.setMonth(pickerMonth.getMonth() + 1); renderDatePicker(); });
+document.getElementById("dpDays").addEventListener("click", (e) => {
+  const b = e.target.closest(".dp-day");
+  if (!b) return;
+  if (chooseDay(Number(b.dataset.ts))) { closeDatePicker(true); renderDateFilter(); }
+  else renderDatePicker();
+});
+document.getElementById("dpClear").addEventListener("click", () => { dateRange = null; closeDatePicker(true); renderDateFilter(); });
+document.getElementById("dateFilterRemove").addEventListener("click", () => { dateRange = null; renderDateFilter(); dateButton.focus(); });
+datePicker.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeDatePicker(true); } });
+document.addEventListener("mousedown", (e) => {
+  if (!datePicker.hidden && !datePicker.contains(e.target) && !dateButton.contains(e.target)) closeDatePicker(false);
+});
 
 function importBar() {
   return `<div class="import-bar">
