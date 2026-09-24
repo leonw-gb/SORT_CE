@@ -4,16 +4,24 @@
 // The document ships with data-theme="dark" in the markup, so the default
 // never flashes while the stored config loads.
 function applyTheme(theme) {
-  document.documentElement.setAttribute("data-theme", theme === "light" ? "light" : "dark");
+  const normalized = theme === "light" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", normalized);
+  return normalized;
 }
 
 function loadTheme() {
-  return new Promise((resolve) => {
-    chrome.storage.local.get("theme", (r) => {
-      const t = r && r.theme === "light" ? "light" : "dark";
-      applyTheme(t);
-      resolve(t);
-    });
+  // Saved configuration is authoritative. An unsaved popup preview/draft must
+  // not change other windows; the legacy "theme" key can be stale.
+  return new Promise(resolve => {
+    try {
+      chrome.runtime.sendMessage({type: "getConfig"}, config => {
+        if (!chrome.runtime.lastError && config && config.success !== false) {
+          resolve(applyTheme(config.theme));
+          return;
+        }
+        resolve(applyTheme("dark"));
+      });
+    } catch (_) { resolve(applyTheme("dark")); }
   });
 }
 

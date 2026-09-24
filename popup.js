@@ -543,7 +543,8 @@ document.getElementById("editShortcut").addEventListener("click", () => {
 let currentTheme = "dark";
 
 function markTheme(theme) {
-  currentTheme = applyTheme(theme);
+  currentTheme = theme === "light" ? "light" : "dark";
+  applyTheme(currentTheme);
   document.querySelectorAll("[data-theme-choice]").forEach((b) => {
     b.setAttribute("aria-pressed", String(b.dataset.themeChoice === currentTheme));
   });

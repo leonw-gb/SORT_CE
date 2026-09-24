@@ -16,6 +16,8 @@ let selected = null;      // { id, ref, name } or null when typed manually
 let videoBlob = null;
 let recording = null;
 let busy = false;
+let ticketsLoading = false;
+let selectionConfirmed = false;
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
@@ -98,32 +100,40 @@ function render() {
 }
 
 function choose(id) {
-  if (busy) return;
+  if (busy || ticketsLoading) return;
   selected = tickets.find((t) => t.id === id) || null;
+  selectionConfirmed = !!selected;
   if (selected) $("manual").value = selected.ref;
   render();
 }
 
 async function loadTickets() {
+  if (ticketsLoading || busy) return;
   void SortDiagnostics.emit("ticket.load", "started");
-  if (!cfg.odoo || !cfg.odoo.username || !cfg.odoo.apiKey) {
-    setStatus("Add your Odoo login and API key in the extension settings, or type the ticket number here.");
-    render();
-    return;
-  }
-  setStatus("Loading the last tickets from Odoo…");
+  // Reloading invalidates previous authorization to write back to a ticket.
+  selected = null;
+  selectionConfirmed = false;
+  tickets = [];
+  ticketsLoading = true;
+  render();
   try {
+    if (!cfg.odoo?.username || !cfg.odoo?.apiKey) {
+      setStatus("Add your Odoo login and API key in the extension settings, or type a ticket number for a plain upload.");
+      return;
+    }
+    setStatus("Loading the last tickets from Odoo...");
     const client = new Odoo.OdooClient(cfg.odoo);
     tickets = await client.recentTickets(cfg.odoo.limit || 50, cfg.odoo.model || "helpdesk.ticket");
     void SortDiagnostics.emit("ticket.load", "ok", {count: tickets.length});
-    setStatus(`${tickets.length} tickets loaded. Pick one, or type a number.`);
+    setStatus(`${tickets.length} tickets loaded. Select a row or enter a matching ticket number.`);
   } catch (e) {
     void SortDiagnostics.error("ticket.load", e);
     tickets = [];
     setStatus(`Odoo: ${e.message}`, "err");
+  } finally {
+    ticketsLoading = false;
+    render();
   }
-  if (selected) selected = tickets.find(t => t.id === selected.id && String(t.ref) === $("manual").value.trim()) || null;
-  render();
 }
 
 // ---- the four actions --------------------------------------------------------
@@ -133,16 +143,29 @@ function ticketRef() {
   return selected ? selected.ref : "";
 }
 
+function canLinkOdoo() {
+  const typed = $("manual").value.trim();
+  return !ticketsLoading && !!recording && !!cfg.odoo?.username && !!cfg.odoo?.apiKey &&
+    selectionConfirmed && !!selected && Number.isInteger(selected.id) && selected.id > 0 &&
+    typed !== "" && String(selected.ref) === typed &&
+    tickets.some(t => t.id === selected.id && String(t.ref) === typed);
+}
 function updateActions() {
-  const validTicket = !!selected && Number.isInteger(selected.id) && selected.id > 0 &&
-    String(selected.ref) === $("manual").value.trim();
+  const validTicket = canLinkOdoo();
   $("saveLocal").disabled = busy || !recording;
   $("saveUpload").disabled = busy || !recording || !ticketRef();
-  $("saveUploadOdoo").disabled = busy || !recording || !validTicket;
-  $("saveUploadOdoo").title = validTicket ? "Upload this session and add its link to the selected Odoo ticket"
-    : "Select an Odoo ticket from the list. A matching loaded ticket number also works.";
+  const odooButton = $("saveUploadOdoo");
+  odooButton.disabled = busy || !validTicket;
+  odooButton.setAttribute("aria-disabled", String(odooButton.disabled));
+  odooButton.title = validTicket ? `Add the recording link to Odoo ticket ${selected.ref}`
+    : "Select an Odoo ticket row or type the number of a loaded ticket first.";
+  $("odooSelectionStatus").textContent = ticketsLoading ? "Loading tickets - Odoo action unavailable."
+    : validTicket ? `Selected Odoo ticket: ${selected.ref}${selected.name ? " - " + selected.name : ""}`
+    : !cfg.odoo?.username || !cfg.odoo?.apiKey ? "Odoo credentials are missing."
+    : "No Odoo ticket selected. Select a row or enter a matching loaded ticket number.";
   $("discard").disabled = busy || !recording;
-  for (const id of ["reload", "manual", "q"]) $(id).disabled = busy;
+  $("reload").disabled = busy || ticketsLoading;
+  for (const id of ["manual", "q"]) $(id).disabled = busy || ticketsLoading;
 }
 function setBusy(on) { busy = on; updateActions(); }
 
@@ -208,7 +231,7 @@ async function run(action) {
     setStatus("Pick a ticket or type a ticket number first.", "err");
     return;
   }
-  if (action === "odoo" && !(selected && Number.isInteger(selected.id) && selected.id > 0 && String(selected.ref) === $("manual").value.trim())) {
+  if (action === "odoo" && !canLinkOdoo()) {
     setStatus("Choose the ticket from the list. A typed number alone cannot be written back to Odoo.", "err");
     return;
   }
@@ -299,11 +322,15 @@ saveToDisk = SortDiagnostics.trace("bundle.download", saveToDisk);
 
 // ---- wiring ------------------------------------------------------------------
 $("q").addEventListener("input", render);
-$("manual").addEventListener("input", () => {
-  const v = $("manual").value.trim();
-  if (!selected || String(selected.ref) !== v) selected = tickets.find((t) => String(t.ref) === v) || null;
+function handleTicketNumberEdit() {
+  if (busy || ticketsLoading) return;
+  const value = $("manual").value.trim();
+  selected = value ? tickets.find(t => String(t.ref) === value) || null : null;
+  selectionConfirmed = !!selected;
   render();
-});
+}
+$("manual").addEventListener("input", handleTicketNumberEdit);
+$("manual").addEventListener("change", handleTicketNumberEdit);
 $("reload").addEventListener("click", loadTickets);
 $("saveLocal").addEventListener("click", () => run("local"));
 $("saveUpload").addEventListener("click", () => run("upload"));
@@ -342,8 +369,8 @@ window.addEventListener("keydown", e => {
 updateActions();
 
 (async function init() {
-  loadTheme();
   cfg = withFixedSettings(await ask({ type: "getConfig" }));
+  applyTheme(cfg.theme);
   const recs = (await ask({ type: "getRecordings" })) || [];
   recording = recs.find((r) => r.id === recId) || null;
 
@@ -360,12 +387,11 @@ updateActions();
 
   await loadTickets();
 
-  // A call-triggered recording may already know its ticket. Pre-select it so
-  // the operator only has to confirm.
+  // A call ticket is a suggestion, not an operator-confirmed Odoo selection.
   const fromCall = (recording && recording.calls || []).map(c => c.ticketRef).find(Boolean);
   if (fromCall) {
-    $("manual").value = fromCall;
-    const match = tickets.find(t => t.ref === String(fromCall));
-    if (match) choose(match.id); else render();
+    $("callTicketSuggestion").textContent = `Call suggested ticket ${fromCall}. Select it from the list or enter its number to confirm.`;
+    $("callTicketSuggestion").hidden = false;
   }
+  updateActions();
 })();

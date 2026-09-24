@@ -65,14 +65,17 @@
     background:var(--panel2); color:var(--muted); border:1px solid var(--line2);
     border-radius:6px; padding:8px 13px; font-size:12px; font-family:inherit; cursor:pointer;
   }
-  .btn:hover { color:var(--txt); border-color:var(--dim); }
+  .btn:not(:disabled):hover { color:var(--txt); border-color:var(--dim); }
   .btn:disabled { opacity:.55; cursor:not-allowed; }
   .btn.primary:disabled { background:var(--panel2); border-color:var(--line2); color:var(--muted); }
   dialog { margin:auto; max-width:420px; width:calc(100% - 32px); padding:20px; background:var(--panel); color:var(--txt); border:1px solid var(--line2); border-radius:8px; }
   dialog::backdrop { background:#0009; }
   dialog p { margin:12px 0; line-height:1.5; }
   .dialog-actions { display:flex; gap:10px; justify-content:flex-end; }
-  .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .btn.primary:not(:disabled) { background:var(--accent); border-color:var(--accent); color:#fff; }
+  #saveUploadOdoo:disabled { background:var(--panel2); border-color:var(--line2); color:var(--muted); opacity:1; cursor:not-allowed; box-shadow:none; }
+  .selection-status { padding:8px 16px; color:var(--muted); font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+  #callTicketSuggestion[hidden] { display:none; }
   .btn.danger { color:var(--err); }
   .btn:focus-visible, tbody tr:focus-visible { outline:2px solid var(--link); outline-offset:1px; }
   .spacer { flex:1; }
@@ -100,12 +103,14 @@
     <button class="btn" id="reload">Reload tickets</button>
   </div>
 
+  <div id="callTicketSuggestion" class="selection-status" hidden></div>
   <div id="list"></div>
+  <div id="odooSelectionStatus" class="selection-status" role="status">No Odoo ticket selected.</div>
 
   <footer>
     <button class="btn" id="saveLocal">Save locally</button>
     <button class="btn primary" id="saveUpload">Save and upload session</button>
-    <button class="btn primary" id="saveUploadOdoo" disabled>Upload session and add link to ticket</button>
+    <button class="btn primary" id="saveUploadOdoo" disabled aria-disabled="true" aria-describedby="odooSelectionStatus">Upload session and add link to ticket</button>
     <span class="spacer"></span>
     <button class="btn danger" id="discard">Delete recording</button>
   </footer>

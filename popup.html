@@ -334,6 +334,7 @@
     @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
     @keyframes fadeUp { from { opacity:0; transform: translateX(-50%) translateY(8px); } }
 
+    #settingsDraftNotice[hidden], #discardSettings[hidden] { display:none !important; }
     .settings-draft { margin:0 0 12px; padding:12px; border:1px solid var(--accent); background:var(--surface2); font-size:12px; line-height:1.5; }
     .settings-draft .btn { margin-top:8px; }
     .ticket-folder { margin:8px 0; border:1px solid var(--edge2); background:var(--surface); border-radius:5px; overflow:hidden; }
