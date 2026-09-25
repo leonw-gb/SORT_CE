@@ -62,21 +62,50 @@ const Odoo = (() => {
         [this.db, this.uid, this.apiKey, model, method, args || [], kwargs || {}]);
     }
 
-    // Most recent tickets, newest first. The dialog fetches once and filters
-    // locally, so typing in the search box never waits on the network.
-    async recentTickets(limit = 50, model = "helpdesk.ticket") {
-      const fields = ["id", "name", "user_id", "system_project_id", "stage_id", "ticket_ref"];
-      const rows = await this.call(model, "search_read", [[]], {
-        fields, limit, order: "create_date desc"
+    ticketRow(t) {
+      return {
+        id: t.id, ref: String(t.ticket_ref || "").trim(), name: t.name || "Untitled",
+        agent: rel(t.user_id, "Unassigned"), system: rel(t.system_project_id, "No system"),
+        stage: rel(t.stage_id, "Unknown"), part: rel(t.affected_part_id, ""),
+        detail: t.detailed_affected_part || "", incident: t.incident_time || "",
+        created: t.create_date || ""
+      };
+    }
+
+    async recentTickets(limit = 50, model = "helpdesk.ticket", query = "") {
+      const fields = ["id", "name", "user_id", "system_project_id", "stage_id", "ticket_ref", "create_date"];
+      const domain = query ? ["|", ["ticket_ref", "ilike", query], ["name", "ilike", query]] : [];
+      const rows = await this.call(model, "search_read", [domain], {
+        fields, limit, order: "create_date desc, id desc", context: {active_test: false}
       });
-      return rows.map((t) => ({
-        id: t.id,
-        name: t.name || "Untitled",
-        ref: String(t.ticket_ref || t.id),
-        agent: rel(t.user_id, "Unassigned"),
-        system: rel(t.system_project_id, "No system"),
-        stage: rel(t.stage_id, "Unknown")
-      }));
+      return rows.map(t => this.ticketRow(t)).filter(t => t.ref);
+    }
+
+    // Read the complete time window, including closed/archived tickets. IDs
+    // are pagination/API keys only, never user-facing references or features.
+    async matchingTickets(start, end, model = "helpdesk.ticket") {
+      const meta = await this.call(model, "fields_get", [], {attributes: ["type"]});
+      const requested = ["id", "ticket_ref", "name", "user_id", "system_project_id", "stage_id",
+        "affected_part_id", "detailed_affected_part", "incident_time", "create_date"];
+      for (const key of ["id", "ticket_ref", "create_date"]) {
+        if (!meta[key]) throw new Error(`Required ticket field unavailable: ${key}. Use Newest first.`);
+      }
+      const fields = requested.filter(k => meta[k]);
+      const utc = ms => new Date(ms).toISOString().slice(0, 19).replace("T", " ");
+      const domain = [["create_date", ">=", utc(start)], ["create_date", "<=", utc(end)]];
+      const result = []; let last = 0;
+      for (;;) {
+        const page = await this.call(model, "search_read", [[...domain, ["id", ">", last]]], {
+          fields, limit: 100, order: "id asc", context: {active_test: false}
+        });
+        if (!Array.isArray(page)) throw new Error("Invalid Odoo ticket response.");
+        if (!page.length) break;
+        const next = Math.max(...page.map(t => Number(t.id)));
+        if (!Number.isSafeInteger(next) || next <= last) throw new Error("Ticket pagination did not advance.");
+        result.push(...page.map(t => this.ticketRow(t)).filter(t => t.ref));
+        last = next;
+      }
+      return {tickets: result, missing: requested.filter(k => !meta[k])};
     }
 
     // Add the recording link to the TOP of the ticket description, matching

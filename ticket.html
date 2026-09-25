@@ -77,6 +77,9 @@
   #callTicketSuggestion[hidden] { display:none; }
   .btn.danger, .btn.danger:not(:disabled):hover { color:#ff0000; }
   .btn:focus-visible, tbody tr:focus-visible { outline:2px solid var(--link); outline-offset:1px; }
+  #ticketMode[aria-pressed="true"] { color:var(--link); border-color:var(--link); }
+  .match-reasons { display:block; margin-top:4px; color:var(--muted); font-size:11px; line-height:1.4; }
+  input[type=search] { max-width:100%; }
   .spacer { flex:1; }
 
   #status { padding:10px 16px; font-size:12px; color:var(--muted); border-top:1px solid var(--line); }
@@ -100,9 +103,12 @@
     <input type="text" id="manual" inputmode="numeric" placeholder="e.g. 1234">
     <span class="spacer"></span>
     <button class="btn" id="reload">Reload tickets</button>
+    <button class="btn" id="ticketMode" type="button" aria-pressed="true" aria-controls="list" title="Switch to newest tickets first">Match mode</button>
+    <button class="btn" id="findOlder" type="button" title="Search Odoo by ticket reference or subject, without a date limit">Find older tickets</button>
   </div>
 
   <div id="callTicketSuggestion" class="selection-status" hidden></div>
+  <div id="matchInfo" class="selection-status" role="status"></div>
   <div id="list"></div>
   <div id="odooSelectionStatus" class="selection-status" role="status">No Odoo ticket selected.</div>
 
@@ -133,6 +139,7 @@
   <script src="odoo.js"></script>
   <script src="sortz.js"></script>
   <script src="upload.js"></script>
+  <script src="ticketmatch.js"></script>
   <script src="ticket.js"></script>
 </body>
 </html>

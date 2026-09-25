@@ -18,6 +18,10 @@ let recording = null;
 let busy = false;
 let ticketsLoading = false;
 let selectionConfirmed = false;
+let ticketMode = "match";
+let matchFeatures = null;
+let matchMissing = [];
+let olderSearch = false;
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
@@ -67,47 +71,58 @@ function ask(msg) {
 function render() {
   updateActions();
   const q = $("q").value.trim().toLowerCase();
-  const rows = tickets.filter((t) => !q ||
+  let rows = tickets.filter((t) => !q ||
     [t.ref, t.name, t.system, t.agent, t.stage].join(" ").toLowerCase().includes(q));
 
+  const matched = ticketMode === "match" && !olderSearch;
+  if (matched) rows = SortTicketMatch.rank(rows, matchFeatures || SortTicketMatch.extract(recording || {})).slice(0, 10);
+  else rows.sort((a,b) => (b.created || "").localeCompare(a.created || ""));
+  $("matchInfo").textContent = ticketsLoading ? "Loading tickets..." : olderSearch
+    ? `Odoo search results: ${tickets.length} (up to 100), newest first; no date limit. Clear the filter or Reload tickets to return.`
+    : matched ? `Top ${rows.length} of ${tickets.length} candidates from the recording's two-week window. Scores are relevance, not probabilities.${!matchFeatures?.system ? " No active RKA identified: limited evidence." : ""}${matchFeatures?.ambiguousSystem ? " Multiple active systems: check suggestions carefully." : ""}${matchMissing.length ? " Some ticket fields are unavailable; scores use partial evidence." : ""}`
+    : `${tickets.length} recent tickets, newest first. Use Find older tickets to search beyond this list.`;
   if (!rows.length) {
     $("list").innerHTML =
       `<div style="padding:20px;color:#9aa4b2">${tickets.length
-        ? "No ticket matches that filter. Type the number on the right instead."
+        ? "No ticket matches that filter. Try Find older tickets, or enter a reference for a plain upload."
         : "No tickets loaded. Add your Odoo login in the extension settings, or type the ticket number."}</div>`;
     return;
   }
 
   $("list").innerHTML =
     `<table><thead><tr>
-      <th>Ticket</th><th>Subject</th><th>System</th><th>Agent</th><th>Stage</th>
+      <th>Ticket</th><th>Subject</th>${matched ? "<th>Relevance</th>" : ""}<th>System</th><th>Agent</th><th>Stage</th>
     </tr></thead><tbody>` +
-    rows.map((t) => `<tr tabindex="0" data-id="${t.id}" data-ref="${esc(t.ref)}"
+    rows.map((t) => `<tr tabindex="0" data-ref-row="${esc(t.ref)}" data-ref="${esc(t.ref)}"
         ${selected && selected.id === t.id ? 'class="sel"' : ""}>
         <td class="ref">${esc(t.ref)}</td>
-        <td class="subj">${esc(t.name)}</td>
+        <td class="subj">${esc(t.name)}${matched ? `<span class="match-reasons">${esc(t.match.reasons.join(" · "))}</span>` : ""}</td>
+        ${matched ? `<td class="ref" title="Heuristic relevance; not a probability">${Math.round(t.match.score)} / 100</td>` : ""}
         <td class="dim">${esc(t.system)}</td>
         <td class="dim">${esc(t.agent)}</td>
         <td class="dim">${esc(t.stage)}</td>
       </tr>`).join("") +
     `</tbody></table>`;
 
-  $("list").querySelectorAll("tr[data-id]").forEach((tr) => {
-    const pick = () => choose(Number(tr.dataset.id));
+  $("list").querySelectorAll("tr[data-ref-row]").forEach((tr) => {
+    const pick = () => choose(tr.dataset.refRow);
     tr.addEventListener("click", pick);
     tr.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
   });
 }
 
-function choose(id) {
+function choose(ref) {
   if (busy || ticketsLoading) return;
-  selected = tickets.find((t) => t.id === id) || null;
+  selected = tickets.find((t) => t.ref === ref) || null;
   selectionConfirmed = !!selected;
   if (selected) $("manual").value = selected.ref;
   render();
 }
 
-async function loadTickets() {
+async function loadTickets(searchOlder = false) {
+  searchOlder = searchOlder === true;
+  const query = $("q").value.trim();
+  if (searchOlder && !query) { setStatus("Enter a ticket reference or subject in the filter, then choose Find older tickets."); $("q").focus(); return; }
   if (ticketsLoading || busy) return;
   void SortDiagnostics.emit("ticket.load", "started");
   // Reloading invalidates previous authorization to write back to a ticket.
@@ -115,15 +130,24 @@ async function loadTickets() {
   selectionConfirmed = false;
   tickets = [];
   ticketsLoading = true;
+  olderSearch = searchOlder;
+  matchMissing = [];
   render();
   try {
     if (!cfg.odoo?.username || !cfg.odoo?.apiKey) {
       setStatus("Add your Odoo login and API key in the extension settings, or type a ticket number for a plain upload.");
       return;
     }
-    setStatus("Loading the last tickets from Odoo...");
+    setStatus(searchOlder ? "Searching Odoo without a date limit..." : ticketMode === "match" ? "Loading all tickets in the recording window..." : "Loading newest tickets from Odoo...");
     const client = new Odoo.OdooClient(cfg.odoo);
-    tickets = await client.recentTickets(cfg.odoo.limit || 50, cfg.odoo.model || "helpdesk.ticket");
+    const model = cfg.odoo.model || "helpdesk.ticket";
+    if (ticketMode === "match" && !searchOlder) {
+      const start = Number(recording?.startTime), end = Number(recording?.endTime || start);
+      if (!Number.isFinite(start) || start <= 0 || !Number.isFinite(end) || end < start) throw new Error("Recording time unavailable. Switch to Newest first.");
+      const result = await client.matchingTickets(start - 14*86400000, end, model);
+      tickets = result.tickets; matchMissing = result.missing;
+      matchFeatures = SortTicketMatch.extract(recording || {});
+    } else tickets = await client.recentTickets(searchOlder ? 100 : (cfg.odoo.limit || 50), model, searchOlder ? query : "");
     void SortDiagnostics.emit("ticket.load", "ok", {count: tickets.length});
     setStatus(`${tickets.length} tickets loaded. Select a row or enter a matching ticket number.`);
   } catch (e) {
@@ -165,6 +189,11 @@ function updateActions() {
     : "No Odoo ticket selected. Select a row or enter a matching loaded ticket number.";
   $("discard").disabled = busy || !recording;
   $("reload").disabled = busy || ticketsLoading;
+  $("ticketMode").disabled = busy || ticketsLoading;
+  $("ticketMode").textContent = ticketMode === "match" ? "Match mode" : "Newest first";
+  $("ticketMode").setAttribute("aria-pressed", String(ticketMode === "match"));
+  $("ticketMode").title = ticketMode === "match" ? "Switch to newest tickets first" : "Switch to match mode";
+  $("findOlder").disabled = busy || ticketsLoading;
   for (const id of ["manual", "q"]) $(id).disabled = busy || ticketsLoading;
 }
 function setBusy(on) { busy = on; updateActions(); }
@@ -321,7 +350,7 @@ buildBundle = SortDiagnostics.trace("bundle.build", buildBundle);
 saveToDisk = SortDiagnostics.trace("bundle.download", saveToDisk);
 
 // ---- wiring ------------------------------------------------------------------
-$("q").addEventListener("input", render);
+$("q").addEventListener("input", () => { if (olderSearch && !$("q").value.trim()) void loadTickets(); else render(); });
 function handleTicketNumberEdit() {
   if (busy || ticketsLoading) return;
   const value = $("manual").value.trim();
@@ -331,7 +360,14 @@ function handleTicketNumberEdit() {
 }
 $("manual").addEventListener("input", handleTicketNumberEdit);
 $("manual").addEventListener("change", handleTicketNumberEdit);
-$("reload").addEventListener("click", loadTickets);
+$("reload").addEventListener("click", () => loadTickets());
+$("ticketMode").addEventListener("click", () => {
+  if (busy || ticketsLoading) return;
+  ticketMode = ticketMode === "match" ? "newest" : "match";
+  // Retain the query/manual reference; reloading requires fresh confirmation.
+  void loadTickets();
+});
+$("findOlder").addEventListener("click", () => loadTickets(true));
 $("saveLocal").addEventListener("click", () => run("local"));
 $("saveUpload").addEventListener("click", () => run("upload"));
 $("saveUploadOdoo").addEventListener("click", () => run("odoo"));
