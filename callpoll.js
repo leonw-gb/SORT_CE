@@ -243,7 +243,7 @@ let tick = async function tick() {
       reportCallState({ type: "callStateStarted", call: mine });
     } else {
       note("call ended", { callId: prev.split("|")[0] });
-      reportCallState({ type: "callStateEnded", callId: prev.split("|")[0] });
+      reportCallState({ type: "callStateEnded", callId: prev.split("|")[0], observedAt: Date.now() });
     }
   }
 

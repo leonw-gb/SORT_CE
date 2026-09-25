@@ -11,7 +11,7 @@ const VIDEOS_STORE = "videos";
 // Stated as what you WANT rather than what to suppress: the useful default is
 // the operator's own actions, and Navigation/Network/WebSocket/Other are
 // context you go looking for, not context you read past every time.
-const DEFAULT_VISIBLE = new Set(["click", "input", "key", "tab"]);
+const DEFAULT_VISIBLE = new Set(["click", "input", "key", "tab", "call"]);
 // A pause longer than this (ms) gets a divider; longer than LONG_MS = highlighted.
 const PAUSE_MS = 3000;
 const LONG_MS = 10000;
@@ -462,6 +462,7 @@ function kindOf(ev) {
     case "interaction":
       if (ev.subtype === "input" || ev.subtype === "change") return "input";
       return "click";
+    case "call": return "call";
     case "key": return "key";
     case "tabNavigated":
     case "historyChange": return "nav";
@@ -479,11 +480,12 @@ function kindOf(ev) {
 }
 const ICON = {
   click: "\u25C9", input: "\u270E", key: "\u2328", nav: "\u2192", tab: "\u25A2",
-  net: "\u21C5", ws: "\u21C6", misc: "\u2022",
+  call: "\u260E", net: "\u21C5", ws: "\u21C6", misc: "\u2022",
   scroll: "\u2195", visibility: "\u25D1"
 };
 // Chip groups shown in the toolbar (kinds folded into one control).
 const CHIP_GROUPS = [
+  { k: "call", label: "Calls", kinds: ["call"] },
   { k: "click", label: "Clicks", kinds: ["click"] },
   { k: "input", label: "Inputs", kinds: ["input"] },
   { k: "key", label: "Keys", kinds: ["key"] },
@@ -673,6 +675,15 @@ function describe(ev) {
       const val = (isTypingPlain && plainVal && plainVal !== label)
         ? ` \u2192 "${esc(plainVal)}"` : (isTypingPlain && d.masked ? " (masked)" : "");
       return { lead: `${verb} ${boldLabel(label)}${val}`, sub, dbg: plainDbg };
+    }
+    case "call": {
+      const names = {answered: "Call answered", started: "Outgoing call started", ended: "Call ended", ongoing: "Call already in progress"};
+      const lead = names[ev.phase] || ev.action || "Call event";
+      const detail = ["Sipgate", ev.direction === "out" ? "Outbound" : ev.direction === "in" ? "Inbound" : "",
+        ev.preRecording || ev.relativeTime < 0 ? "Before recording started" : "",
+        ev.timing === "observed" ? "Time detected by SORT; polling may delay this event" : "",
+        ev.label || ""].filter(Boolean).join(" · ");
+      return {lead: esc(lead), sub: detail};
     }
     case "key": {
       const combo = [ev.ctrl && "Ctrl", ev.meta && "Cmd", ev.alt && "Alt", ev.shift && "Shift", ev.key].filter(Boolean).join("+");
@@ -1018,7 +1029,7 @@ function passesFilters(ev) {
   if (group && hiddenKinds.has(group.k)) return false;
   if (!group && hiddenKinds.has("misc")) return false;
   // Tab filter
-  if (tabFilter !== "" && String(ev.tabId) !== tabFilter) return false;
+  if (tabFilter !== "" && ev.type !== "call" && String(ev.tabId) !== tabFilter) return false;
   // Search
   if (searchQ) {
     const dsc = describe(ev);
@@ -1083,6 +1094,10 @@ function renderTabLanes(log, visible) {
 
   const frag = document.createDocumentFragment();
   lanes.forEach((lane) => {
+    if (lane.items.every(e => e.type === "call")) {
+      const body = document.createElement("div"); body.className = "log-body";
+      lane.items.forEach(e => body.appendChild(rowEl(e))); frag.appendChild(body); return;
+    }
     const first = lane.items[0];
     const last = lane.items[lane.items.length - 1];
     const span = (last.relativeTime || 0) - (first.relativeTime || 0);
@@ -1297,8 +1312,17 @@ async function init() {
   };
   currentSource = loaded;
   renderProvenance(loaded.meta);
+  const ticketUrl = Odoo.ticketUrl(loaded.meta.ticket);
+  if (ticketUrl) {
+    const link = document.createElement("a"); link.href = ticketUrl;
+    link.target = "_blank"; link.rel = "noopener noreferrer";
+    link.textContent = `Open ticket ${loaded.meta.ticket.ref}`;
+    document.getElementById("ticketLink").appendChild(link);
+    document.getElementById("ticketLink").hidden = false;
+  }
 
   events = (recording.events || [])
+    .map(e => e.type === "call" && e.relativeTime < 0 ? {...e, relativeTime: 0, preRecording: true} : e)
     .filter((e) => e.type !== "rrweb")           // lean mode: no DOM stream anyway
     .sort((a, b) => (a.relativeTime || 0) - (b.relativeTime || 0));
 

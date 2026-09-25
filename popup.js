@@ -297,7 +297,7 @@ function renderRecordings(allRecordings) {
     // a click that lands in the same tick.
     const sig = JSON.stringify((recordings || []).map(r =>
       [r.id, r.startTime, r.recorder, r.video?.saved, r.endTime, (r.events || []).length, r.imported ? 1 : 0,
-       r.ticket ? [r.ticket.ref, r.ticket.seq, r.ticket.pending, r.ticket.uploadUrl, r.ticket.subject] : 0]));
+       r.ticket ? [r.ticket.ref, r.ticket.seq, r.ticket.pending, r.ticket.uploadUrl, r.ticket.subject, r.ticket.odooId] : 0]));
     const fullSig = sig + "|" + terms.join(" ") + "|" + (dateRange ? dateRange.start + "-" + dateRange.end : "") + "|" + allRecordings.length;
     if (fullSig === lastListSignature) return;
     lastListSignature = fullSig;
@@ -333,6 +333,8 @@ function renderRecordings(allRecordings) {
           ? `<span class="ticket-tag">${esc(t.ref)}_${String(t.seq || 1).padStart(3, "0")}</span>`
           : (unfinished ? `<span class="ticket-tag pending">Not assigned</span>` : "");
         const url = safeRecordingLink(t?.uploadUrl);
+        const ticketUrl = Odoo.ticketUrl(t);
+        const ticketLink = ticketUrl ? ` &middot; <a href="${esc(ticketUrl)}" target="_blank" rel="noopener noreferrer" style="color:var(--link)">Open ticket</a>` : "";
         const link = url ? ` &middot; <a href="${esc(url)}" target="_blank" rel="noopener noreferrer" style="color:var(--link)">recording link</a>` : "";
         // Someone else's session sitting in my list is confusing unless it says
         // so. The name comes from the bundle, so it is the recorder's, not mine.
@@ -344,11 +346,11 @@ function renderRecordings(allRecordings) {
             <span>${formatDate(rec.startTime)}</span>
             <span style="color:var(--ink-faint)">${dur}</span>
           </div>
-          <div class="recording-meta">${from}${tag}${tabCount} tab(s) &middot; ${(rec.events || []).length} events${link}</div>
+          <div class="recording-meta">${from}${tag}${tabCount} tab(s) &middot; ${(rec.events || []).length} events${link}${ticketLink}</div>
           <div class="recording-actions">
             ${unfinished && !rec.imported ? `<button data-action="ticket" data-id="${esc(rec.id)}">Assign ticket</button>` : ""}
             <button data-action="replay" data-id="${esc(rec.id)}">▶ Replay</button>
-            ${rec.imported ? "" : `<button data-action="export" data-id="${esc(rec.id)}">Export</button>`}
+            <button data-action="export" data-id="${esc(rec.id)}" ${rec.video?.saved ? 'title="Download the video only, without the timeline"' : 'disabled title="No saved video is available for this session"'}>Export video</button>
             <button data-action="delete" data-id="${esc(rec.id)}" class="danger">Delete</button>
           </div>
         </div>`;
@@ -461,15 +463,15 @@ function openReplay(id) {
 }
 
 function exportRecording(id, btn) {
-  // A bundle with video is hundreds of megabytes and takes a few seconds to
+  // A video can be hundreds of megabytes and take a few seconds to
   // write. The worker keeps going if this popup closes; the button just stops
   // reporting. Say so rather than looking frozen.
   if (btn) { btn.disabled = true; btn.textContent = "Exporting…"; }
-  showToast("Building the bundle. This keeps running if you close SORT.", 4000);
+  showToast("Preparing the video download. This keeps running if you close SORT.", 4000);
 
-  chrome.runtime.sendMessage({ type: "exportRecording", id }, (res) => {
-    if (btn) { btn.disabled = false; btn.textContent = "Export"; }
-    if (res && res.success) showToast(`Saved ${res.filename} to Downloads`, 4000);
+  chrome.runtime.sendMessage({ type: "exportVideoRecording", id }, (res) => {
+    if (btn) { btn.disabled = false; btn.textContent = "Export video"; }
+    if (res && res.success) showToast(`Download started: ${res.filename}`, 4000);
     else showToast(res?.error || "The export did not finish.", 5000);
   });
 }

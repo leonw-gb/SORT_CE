@@ -1,3 +1,11 @@
+## 2.32.0
+
+- Replaced the Recordings list Export action with Export video: downloads the stored video without rebuilding a session bundle. Available for imported recordings with video; disabled for timeline-only sessions. The normal save/upload flow still uses .sortz.
+- Added Open ticket links in the recording list and local session player using the assigned Odoo database ID, never the displayed reference. Assignment metadata is included before saving/uploading a new bundle and preserved on import. Old files lacking an Odoo ID cannot gain a link automatically.
+- Added a Calls timeline filter, visible by default, with Sipgate answered/outgoing-started, already-in-progress and ended events from the existing call-state watcher. End times are detection times and can lag due to polling. Poll failures are not treated as hangups; ringing/hold/transfer events are not inferred.
+- Call events remain visible when filtering a browser tab and when folding tab lanes. Calls before recording start are shown at the start with a context label, not negative video positions. Existing recorded call-start events are now readable; missing historical call-end events cannot be reconstructed.
+- No new permissions. Seven-day ticket matching, fallback modes and manual confirmation are unchanged.
+
 ## 2.31.1
 
 - Shortened the Match mode candidate window from 14 to 7 days before recording start, through recording end, to reduce ticket retrieval and ranking work.

@@ -153,7 +153,12 @@ const Odoo = (() => {
   OdooClient.prototype.recentTickets = SortDiagnostics.trace("odoo.tickets", OdooClient.prototype.recentTickets);
   OdooClient.prototype.addRecordingLink = SortDiagnostics.trace("odoo.link", OdooClient.prototype.addRecordingLink);
 
-  return { OdooClient };
+  function ticketUrl(ticket) {
+    const id = ticket?.odooId;
+    if (!Number.isSafeInteger(id) || id <= 0 || !String(ticket?.ref || "").trim()) return "";
+    return `https://odoo.goodbytz.com/web#id=${id}&cids=1&menu_id=486&action=754&active_id=3&model=helpdesk.ticket&view_type=form`;
+  }
+  return { OdooClient, ticketUrl };
 })();
 
 if (typeof globalThis !== "undefined") globalThis.Odoo = Odoo;

@@ -83,6 +83,22 @@ async function buildBundle(recordingId) {
   return { blob, filename: SORTZ.filenameFor(session, session.recorder) };
 }
 
+async function prepareVideo(recordingId) {
+  const session = await getFrom(RECORDINGS_STORE, recordingId);
+  if (!session) throw new Error("That recording is no longer stored.");
+  const video = await getFrom(VIDEOS_STORE, recordingId);
+  const blob = video?.blob;
+  if (!(blob instanceof Blob) || !blob.size) throw new Error("No saved video is available for this session.");
+  const mime = (blob.type || session.video?.mimeType || "video/webm").toLowerCase().split(";")[0];
+  const ext = mime === "video/mp4" ? ".mp4" : mime === "video/webm" ? ".webm" : null;
+  if (!ext) throw new Error("This stored video format is not supported for direct export.");
+  const ref = String(session.ticket?.ref || "").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0,80);
+  const seq = Number.isSafeInteger(session.ticket?.seq) && session.ticket.seq > 0 ? session.ticket.seq : 1;
+  const filename = ref ? `${ref}_${String(seq).padStart(3,"0")}${ext}`
+    : SORTZ.filenameFor({...session, ticket: null}, session.recorder).replace(/\.sortz$/i, ext);
+  return {blob, filename};
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.target !== "offscreen") return false;
   if (!SortSecurity.worker(sender)) return false;
@@ -103,12 +119,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  if (message.type === "buildBundle") {
-    buildBundle(message.id)
+  if (message.type === "buildBundle" || message.type === "prepareVideo") {
+    (message.type === "prepareVideo" ? prepareVideo(message.id) : buildBundle(message.id))
       .then(({ blob, filename }) => {
         // The blob: URL must outlive this message. The worker revokes it once
         // chrome.downloads reports the write finished.
         const url = URL.createObjectURL(blob);
+        setTimeout(() => URL.revokeObjectURL(url), 60 * 60 * 1000);
         sendResponse({ success: true, url, filename, size: blob.size });
       })
       .catch((e) => sendResponse({ success: false, error: String(e.message || e) }));

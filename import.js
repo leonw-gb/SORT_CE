@@ -194,7 +194,9 @@ $("confirm").addEventListener("click", async () => {
       // reference is useful context; keeping the upload link is not, because
       // it points at a video that the retention policy will delete.
       ticket: session.ticket
-        ? { ref: session.ticket.ref, seq: session.ticket.seq, assignedAt: session.ticket.assignedAt || null }
+        ? { ref: session.ticket.ref, seq: session.ticket.seq, assignedAt: session.ticket.assignedAt || null,
+            subject: typeof session.ticket.subject === "string" ? session.ticket.subject : null,
+            odooId: Number.isSafeInteger(session.ticket.odooId) && session.ticket.odooId > 0 ? session.ticket.odooId : null }
         : null
     });
 

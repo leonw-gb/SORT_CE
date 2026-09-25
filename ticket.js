@@ -220,7 +220,7 @@ async function buildBundle() {
     videoMimeType: (recording.video && recording.video.mimeType) || "video/webm",
     hasVideo: !!videoBlob,
     eventCount: (recording.events || []).length,
-    ticket: recording.ticket ? { ref: recording.ticket.ref, seq: recording.ticket.seq } : null
+    ticket: recording.ticket ? { ref: recording.ticket.ref, seq: recording.ticket.seq, odooId: recording.ticket.odooId || null, odooUrl: Odoo.ticketUrl(recording.ticket) || null } : null
   };
   setStatus("Packing the session\u2026");
   bundleBlob = await SORTZ.build({
@@ -276,6 +276,12 @@ async function run(action) {
   setBusy(true);
   try {
     const seq = await ask({ type: "nextTicketSequence", ticketRef: ref });
+    recording = {...recording, ticket: {
+      ref, seq: seq.next, odooId: selectionConfirmed && selected?.ref === ref ? selected.id : null,
+      subject: selectionConfirmed && selected?.ref === ref ? selected.name : null
+    }};
+    recording.ticket.odooUrl = Odoo.ticketUrl(recording.ticket) || null;
+    bundleBlob = null; // A retry/reassignment must not reuse old ticket metadata.
     const { name, path } = await saveToDisk(ref, seq.next);
     setStatus(`Saved as ${path}.`, "ok");
 
@@ -320,7 +326,8 @@ async function run(action) {
       id: recId,
       ticket: {
         ref, seq: seq.next, filename: name, path,
-        odooId: selected ? selected.id : null,
+        odooId: recording.ticket.odooId,
+        odooUrl: recording.ticket.odooUrl,
         subject: selected ? selected.name : null,
         uploadUrl: link, linkKind, odooUpdated: odooDone
       }
@@ -329,7 +336,8 @@ async function run(action) {
     statusEl.innerHTML =
       `<span style="color:var(--ok)">Done.</span> Saved as ${esc(path)}` +
       (link ? ` · <a href="${esc(link)}" target="_blank">Open the ${linkKind === "session" ? "session" : "video"}</a>` : "") +
-      (odooDone ? ` · added to ticket ${esc(ref)}` : "");
+      (odooDone ? ` · added to ticket ${esc(ref)}` : "") +
+      (Odoo.ticketUrl(recording.ticket) ? ` · <a href="${esc(Odoo.ticketUrl(recording.ticket))}" target="_blank" rel="noopener noreferrer">Open ticket ${esc(ref)}</a>` : "");
     void SortDiagnostics.emit("ticket.action", "ok");
     setTimeout(() => window.close(), 4000);
 
@@ -340,7 +348,7 @@ async function run(action) {
     setBusy(false);
     // The recording stays in the extension. Nothing is lost: the operator can
     // reopen this dialog from the popup and retry once the cause is fixed.
-    await ask({ type: "finishRecording", id: recId, ticket: { ref, error: e.message, pending: true } });
+    await ask({ type: "finishRecording", id: recId, ticket: { ...(recording.ticket?.ref === ref ? recording.ticket : {}), ref, error: e.message, pending: true } });
   }
 }
 

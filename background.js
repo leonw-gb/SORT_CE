@@ -415,7 +415,7 @@ async function startSession(options) {
     const result = await sessionStartPromise;
     if (result.success && pendingCallEndPrompt && canRemind()) await requestContinuePrompt("call");
     return result;
-  } finally { sessionStartPromise = null; pendingCallEndPrompt = false; }
+  } finally { sessionStartPromise = null; pendingCallEndPrompt = false; pendingCallEnds.clear(); }
 }
 
 async function startSessionImpl(options) {
@@ -480,7 +480,7 @@ async function startSessionImpl(options) {
       ? { captured: true, startedAt: capture.startedAt, mimeType: capture.mimeType }
       : { captured: false, error: capture.error || null },
     // Calls seen during this session. The first one decides the ticket the
-    // dialog pre-selects; the rest are context for the timeline.
+    // dialog may suggest; all selections still require confirmation.
     calls: [],
     // Stamped at record time, not export time: this says who made the
     // recording, not who happened to send it on.
@@ -490,6 +490,7 @@ async function startSessionImpl(options) {
     metadata: { manualStart: !(options && options.trigger === "call"), trigger: (options && options.trigger) || "manual" }
   };
   if (options && options.trigger === "call") attachCallToSession(options.call || {});
+  else if (callActive && followedCall) attachCallToSession(followedCall, true);
   // Surface a capture failure to the popup. The session still runs -- the
   // timeline is the primary artifact -- but the operator must know that no
   // video is being recorded rather than discovering it at replay time.
@@ -550,28 +551,37 @@ async function startSessionImpl(options) {
 
 // Record a call against the running session, wherever the session came from.
 // Also visible on the timeline, so the replay shows when the phone rang.
-function attachCallToSession(call) {
+// Pending terminal observations cover a hangup during the screen picker.
+const pendingCallEnds = new Map();
+let followedCall = null;
+function callEventTime(value) {
+  const n = typeof value === "number" ? value : Date.parse(value);
+  return Number.isFinite(n) && n > 0 ? n : Date.now();
+}
+function appendCallEvent(entry, phase, at, timing = "observed") {
   if (!toolEnabled || !activeSession || activeSession.endTime) return;
-  const entry = {
-    id: call.id || null,
-    direction: call.direction || "in",
-    from: call.from || null,
-    to: call.to || null,
-    startedAt: call.startedAt || Date.now(),
-    ticketRef: call.ticketRef || null
-  };
+  const timestamp = callEventTime(at);
+  const action = {answered: "Call answered", started: "Outgoing call started", ongoing: "Call already in progress", ended: "Call ended"}[phase];
+  activeSession.events.push({type: "call", phase, action, source: "sipgate", callId: entry.id,
+    direction: entry.direction, label: entry.direction === "out" ? entry.to || "" : entry.from || "",
+    timing, tabId: null, timestamp, observedAt: Date.now(),
+    preRecording: timestamp < activeSession.startTime,
+    relativeTime: Math.max(0, timestamp - activeSession.startTime)});
+}
+function attachCallToSession(call, ongoing = false) {
+  if (!toolEnabled || !activeSession || activeSession.endTime) return;
+  activeSession.calls ||= [];
+  const id = call.id || call.callId || null;
+  if (id && activeSession.calls.some(c => c.id === id)) return;
+  const entry = {id, direction: call.direction || "in", from: call.from || null, to: call.to || null,
+    startedAt: callEventTime(call.startedAt || call.at), ticketRef: call.ticketRef || null};
   activeSession.calls.push(entry);
-  activeSession.events.push({
-    type: "call",
-    action: entry.direction === "out" ? "Called out" : "Answered a call",
-    label: entry.from || entry.to || "",
-    tabId: null,
-    timestamp: entry.startedAt,
-    relativeTime: entry.startedAt - activeSession.startTime
-  });
-  // This records historical context only. Live call state is established by
-  // the trigger BEFORE awaiting the share picker; never revive it here after
-  // a hangup which arrived while the picker was open.
+  appendCallEvent(entry, ongoing ? "ongoing" : entry.direction === "out" ? "started" : "answered",
+    ongoing ? Date.now() : entry.startedAt, !ongoing && (call.startedAt || call.at) ? "source" : "observed");
+  if (id && pendingCallEnds.has(id)) {
+    const endedAt = pendingCallEnds.get(id); pendingCallEnds.delete(id);
+    entry.endedAt = endedAt; appendCallEvent(entry, "ended", endedAt);
+  }
 }
 
 // Send initializeRecorder to a tab; if the content script is unreachable
@@ -1086,23 +1096,34 @@ let callActive = false;
 
 function markCallActive(call) {
   callActive = true;
+  followedCall = {...call};
   followedCallId = call.callId || call.id || null;
   pendingCallEndPrompt = false;
   clearContinueAlarm();
   void closeContinueWindow();
 }
 
-async function handleCallEnded(callId) {
+async function handleCallEnded(callId, observedAt = Date.now()) {
   if (!callActive) return; // duplicate or unrelated hangup: no extra prompt
   if (followedCallId && callId && callId !== followedCallId) return;
+  const endedId = followedCallId || callId;
+  const endedAt = Math.min(Date.now(), callEventTime(observedAt));
+  const entry = activeSession?.calls?.find(c => c.id === endedId && !c.endedAt);
+  if (entry && activeSession && !activeSession.endTime) {
+    entry.endedAt = endedAt; appendCallEvent(entry, "ended", endedAt);
+  } else if (sessionStartPromise && endedId) {
+    pendingCallEnds.set(endedId, endedAt);
+    while (pendingCallEnds.size > 32) pendingCallEnds.delete(pendingCallEnds.keys().next().value);
+  }
   callActive = false;
+  followedCall = null;
   followedCallId = null;
   if (sessionStartPromise) { pendingCallEndPrompt = true; return; }
   if (canRemind()) await requestContinuePrompt("call");
 }
 
 function handleCallAdopted(call) {
-  if (call) { markCallActive(call); return Promise.resolve(); }
+  if (call) { markCallActive(call); attachCallToSession(call, true); return Promise.resolve(); }
   // A successful re-adoption of "no call" also reconciles a missed hangup.
   // Poll failures never enter this path.
   return handleCallEnded(null);
@@ -1182,7 +1203,7 @@ async function consumeTrigger(t) {
       await trail("handler THREW", { error: String((e && e.message) || e) });
     }
   } else if (t.type === "callStateEnded") {
-    await handleCallEnded(t.callId || null);
+    await handleCallEnded(t.callId || null, t.observedAt || timestamp || Date.now());
   } else if (t.type === "callStateAdopted") {
     await handleCallAdopted(t.call || null);
   }
@@ -1342,7 +1363,7 @@ const WORKER_MESSAGE_PAGES = {
   getConfig: ["popup.html", "ticket.html", "player.html", "import.html", "continue.html", "capture.html", "whatsnew.html"],
   getSettingsDraft: ["popup.html"], saveSettingsDraft: ["popup.html"], clearSettingsDraft: ["popup.html"],
   saveConfig: ["popup.html"], clearCredentials: ["popup.html"], setTheme: ["popup.html"],
-  exportRecording: ["popup.html", "player.html"], consumeNameWarning: ["popup.html"],
+  exportRecording: ["popup.html", "player.html"], exportVideoRecording: ["popup.html"], consumeNameWarning: ["popup.html"],
   openImport: ["popup.html"], importFinished: ["import.html"],
   getUpdateStatus: ["popup.html"], checkForUpdate: ["popup.html"], restartForUpdate: ["popup.html"],
   deferUpdate: ["popup.html"]
@@ -1642,6 +1663,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }).then(sendResponse).catch(() => sendResponse({success: false, error: "Settings could not be saved. Check the endpoint."}));
       return true;
 
+    case "exportVideoRecording":
+      handleExportRecording(message.id, true).then(sendResponse);
+      return true;
+
     case "exportRecording":
       handleExportRecording(message.id).then(sendResponse);
       return true;
@@ -1692,17 +1717,19 @@ async function ensureOffscreen() {
   return offscreenReady;
 }
 
-async function handleExportRecording(recordingId) {
+async function handleExportRecording(recordingId, videoOnly = false) {
+  let blobUrl = null;
   SortUpdates.beginJob();
   try {
     await ensureOffscreen();
     const res = await chrome.runtime.sendMessage({
-      target: "offscreen", type: "buildBundle", id: recordingId
+      target: "offscreen", type: videoOnly ? "prepareVideo" : "buildBundle", id: recordingId
     });
     if (!res || !res.success) {
-      return { success: false, error: (res && res.error) || "The bundle could not be built." };
+      return { success: false, error: (res && res.error) || (videoOnly ? "The video could not be prepared." : "The bundle could not be built.") };
     }
 
+    blobUrl = res.url;
     const downloadId = await chrome.downloads.download({
       url: res.url,
       filename: res.filename,
@@ -1720,9 +1747,15 @@ async function handleExportRecording(recordingId) {
       }
     };
     chrome.downloads.onChanged.addListener(onChanged);
+    // Catch very small downloads that completed before listener registration.
+    try {
+      const [item] = await chrome.downloads.search({id: downloadId});
+      if (item?.state === "complete" || item?.state === "interrupted") onChanged({id: downloadId, state: {current: item.state}});
+    } catch (_) { /* Completion event / offscreen expiry remain the fallback. */ }
 
     return { success: true, filename: res.filename, size: res.size };
   } catch (e) {
+    if (blobUrl) chrome.runtime.sendMessage({target: "offscreen", type: "revokeUrl", url: blobUrl}).catch(() => {});
     return { success: false, error: String(e.message || e) };
   } finally { SortUpdates.endJob(); }
 }
