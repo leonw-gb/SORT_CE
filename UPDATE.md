@@ -1,3 +1,8 @@
+## 2.31.1
+
+- Shortened the Match mode candidate window from 14 to 7 days before recording start, through recording end, to reduce ticket retrieval and ranking work.
+- Newest first and Find older tickets remain unchanged. Matching weights, box mappings and manual confirmation safeguards are unchanged.
+
 ## 2.31.0
 
 - Test build: added Match mode / Newest first toggle next to Reload tickets.

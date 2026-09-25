@@ -79,7 +79,7 @@ function render() {
   else rows.sort((a,b) => (b.created || "").localeCompare(a.created || ""));
   $("matchInfo").textContent = ticketsLoading ? "Loading tickets..." : olderSearch
     ? `Odoo search results: ${tickets.length} (up to 100), newest first; no date limit. Clear the filter or Reload tickets to return.`
-    : matched ? `Top ${rows.length} of ${tickets.length} candidates from the recording's two-week window. Scores are relevance, not probabilities.${!matchFeatures?.system ? " No active RKA identified: limited evidence." : ""}${matchFeatures?.ambiguousSystem ? " Multiple active systems: check suggestions carefully." : ""}${matchMissing.length ? " Some ticket fields are unavailable; scores use partial evidence." : ""}`
+    : matched ? `Top ${rows.length} of ${tickets.length} candidates from the recording's one-week window. Scores are relevance, not probabilities.${!matchFeatures?.system ? " No active RKA identified: limited evidence." : ""}${matchFeatures?.ambiguousSystem ? " Multiple active systems: check suggestions carefully." : ""}${matchMissing.length ? " Some ticket fields are unavailable; scores use partial evidence." : ""}`
     : `${tickets.length} recent tickets, newest first. Use Find older tickets to search beyond this list.`;
   if (!rows.length) {
     $("list").innerHTML =
@@ -144,7 +144,7 @@ async function loadTickets(searchOlder = false) {
     if (ticketMode === "match" && !searchOlder) {
       const start = Number(recording?.startTime), end = Number(recording?.endTime || start);
       if (!Number.isFinite(start) || start <= 0 || !Number.isFinite(end) || end < start) throw new Error("Recording time unavailable. Switch to Newest first.");
-      const result = await client.matchingTickets(start - 14*86400000, end, model);
+      const result = await client.matchingTickets(start - 7*86400000, end, model);
       tickets = result.tickets; matchMissing = result.missing;
       matchFeatures = SortTicketMatch.extract(recording || {});
     } else tickets = await client.recentTickets(searchOlder ? 100 : (cfg.odoo.limit || 50), model, searchOlder ? query : "");
